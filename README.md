@@ -1,5 +1,7 @@
 # meshFlask
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/thorson)
+
 ![meshFlask screenshot](docs/screenshot.png)
 
 A desktop browser and organizer for 3D model files.

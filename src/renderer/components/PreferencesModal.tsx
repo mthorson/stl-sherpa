@@ -19,6 +19,7 @@ import { notifications } from '@mantine/notifications';
 import {
   IconAppWindow,
   IconBox,
+  IconCoffee,
   IconDatabase,
   IconPlus,
   IconRuler,
@@ -107,6 +108,20 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
           <CacheSection libraryId={libraryId} />
         </Tabs.Panel>
       </Tabs>
+      <Divider mt="md" mb="sm" />
+      <Group justify="center">
+        <Button
+          variant="subtle"
+          size="xs"
+          leftSection={<IconCoffee size={14} />}
+          component="a"
+          href="https://buymeacoffee.com/thorson"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Support meshFlask — Buy me a coffee
+        </Button>
+      </Group>
     </Modal>
   );
 }

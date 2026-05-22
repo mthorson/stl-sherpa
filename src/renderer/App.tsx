@@ -13,7 +13,7 @@ import {
   Text,
   Tooltip
 } from '@mantine/core';
-import { IconRefresh, IconSettings } from '@tabler/icons-react';
+import { IconCoffee, IconRefresh, IconSettings } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import {
   Panel,
@@ -1522,6 +1522,18 @@ export function App() {
               comboboxProps={{ withinPortal: true }}
               clearable
             />
+            <Tooltip label="Support meshFlask">
+              <ActionIcon
+                variant="subtle"
+                component="a"
+                href="https://buymeacoffee.com/thorson"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Buy me a coffee"
+              >
+                <IconCoffee size={16} />
+              </ActionIcon>
+            </Tooltip>
             <Tooltip label="Preferences">
               <ActionIcon
                 variant="subtle"
