@@ -1,0 +1,27 @@
+renderer:
+  - changed-files:
+      - any-glob-to-any-file: 'src/renderer/**'
+
+main:
+  - changed-files:
+      - any-glob-to-any-file: 'src/main/**'
+
+shared:
+  - changed-files:
+      - any-glob-to-any-file: 'src/shared/**'
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'docs/**'
+          - '*.md'
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'
+
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'build/**'
+          - 'package.json'

@@ -9,6 +9,7 @@ import migration006 from '../migrations/006_ratings_labels.sql?raw';
 import migration007 from '../migrations/007_smart_collections.sql?raw';
 import migration008 from '../migrations/008_notes.sql?raw';
 import migration009 from '../migrations/009_hierarchical_tags.sql?raw';
+import migration010 from '../migrations/010_file_camera.sql?raw';
 import { createFilesRepo } from './files';
 import {
   RENDERER_VERSION,
@@ -40,6 +41,7 @@ function freshDb() {
   db.exec(migration007);
   db.exec(migration008);
   db.exec(migration009);
+  db.exec(migration010);
   return db;
 }
 
