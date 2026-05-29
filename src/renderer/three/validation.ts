@@ -95,3 +95,72 @@ function addEdge(map: Map<string, number>, a: number, b: number): void {
   const key = a < b ? `${a}|${b}` : `${b}|${a}`;
   map.set(key, (map.get(key) ?? 0) + 1);
 }
+
+const MAX_TRIANGLES_FOR_VOLUME = MAX_TRIANGLES_FOR_VALIDATION;
+
+/**
+ * Signed-tetrahedron mesh volume. For each triangle (a, b, c), contributes
+ * `(a · (b × c)) / 6` to the total — a closed manifold mesh sums to its
+ * enclosed volume regardless of triangle order. Non-watertight meshes give
+ * an approximate (sometimes negative) number; we `abs()` the final result
+ * because callers want a magnitude.
+ *
+ * Vertices are transformed to world space so multi-mesh objects (typical
+ * 3MFs with translated parts) sum correctly. Units match the geometry input
+ * (mm for STL/3MF in the meshFlask convention).
+ *
+ * Returns null when no usable mesh is found or the total triangle count is
+ * over the same cap that `validateScene` uses, so the worker stays bounded.
+ */
+export function computeMeshVolume(obj: THREE.Object3D): number | null {
+  let totalTriangles = 0;
+  obj.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!(mesh as THREE.Object3D).type || !mesh.isMesh) return;
+    const geom = mesh.geometry as THREE.BufferGeometry | undefined;
+    if (!geom) return;
+    const pos = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    const idx = geom.getIndex();
+    totalTriangles += idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
+  });
+  if (totalTriangles === 0 || totalTriangles > MAX_TRIANGLES_FOR_VOLUME) return null;
+
+  obj.updateWorldMatrix(true, true);
+  let signedSixVolume = 0;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const bxc = new THREE.Vector3();
+
+  obj.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!(mesh as THREE.Object3D).type || !mesh.isMesh) return;
+    const geom = mesh.geometry as THREE.BufferGeometry | undefined;
+    if (!geom) return;
+    const pos = geom.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    const idx = geom.getIndex();
+    const m = mesh.matrixWorld;
+
+    if (idx) {
+      for (let i = 0; i < idx.count; i += 3) {
+        a.fromBufferAttribute(pos, idx.getX(i)).applyMatrix4(m);
+        b.fromBufferAttribute(pos, idx.getX(i + 1)).applyMatrix4(m);
+        c.fromBufferAttribute(pos, idx.getX(i + 2)).applyMatrix4(m);
+        bxc.crossVectors(b, c);
+        signedSixVolume += a.dot(bxc);
+      }
+    } else {
+      for (let i = 0; i < pos.count; i += 3) {
+        a.fromBufferAttribute(pos, i).applyMatrix4(m);
+        b.fromBufferAttribute(pos, i + 1).applyMatrix4(m);
+        c.fromBufferAttribute(pos, i + 2).applyMatrix4(m);
+        bxc.crossVectors(b, c);
+        signedSixVolume += a.dot(bxc);
+      }
+    }
+  });
+
+  return Math.abs(signedSixVolume) / 6;
+}

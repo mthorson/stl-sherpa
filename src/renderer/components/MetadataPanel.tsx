@@ -10,6 +10,11 @@ import type {
 } from '@shared/types';
 import type { FileOrientation } from '@shared/orientation';
 import { formatDimension, formatVolume } from '@shared/units';
+import {
+  DEFAULT_PRINT_COST_PREFS,
+  estimateFilamentCost,
+  estimateResinCost
+} from '@shared/print-cost';
 import { TagEditor } from './TagEditor';
 import { BulkMetadataPanel } from './BulkMetadataPanel';
 import { AddToCollectionMenu } from './AddToCollectionMenu';
@@ -286,6 +291,7 @@ function NotesEditor({ libraryId, file }: { libraryId: string; file: FileRecord 
 function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
   const { prefs } = usePreferences();
   const unit = prefs?.unit ?? 'mm';
+  const costPrefs = prefs?.printCost ?? DEFAULT_PRINT_COST_PREFS;
   const isEmbedded = metadata.thumbSource === '3mf-embedded';
   const isZero =
     metadata.boundingBox.size[0] === 0 &&
@@ -294,12 +300,23 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
   const sizeStr = isZero
     ? null
     : metadata.boundingBox.size.map((n) => formatDimension(n, unit)).join(' × ');
-  const volumeStr = isZero
+  const bboxVolumeStr = isZero
     ? null
     : formatVolume(
         metadata.boundingBox.size[0] * metadata.boundingBox.size[1] * metadata.boundingBox.size[2],
         unit
       );
+  const meshVolumeMm3 = metadata.meshVolumeMm3;
+  const meshVolumeStr =
+    meshVolumeMm3 != null && meshVolumeMm3 > 0 ? formatVolume(meshVolumeMm3, unit) : null;
+  const filamentCost =
+    meshVolumeMm3 != null && meshVolumeMm3 > 0
+      ? estimateFilamentCost(meshVolumeMm3, costPrefs)
+      : null;
+  const resinCost =
+    meshVolumeMm3 != null && meshVolumeMm3 > 0
+      ? estimateResinCost(meshVolumeMm3, costPrefs)
+      : null;
 
   return (
     <Stack gap={4}>
@@ -329,7 +346,8 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
             })`}
           />
           {sizeStr && <Field label="Bounding box" value={sizeStr} />}
-          {volumeStr && <Field label="Volume" value={volumeStr} />}
+          {bboxVolumeStr && <Field label="Bounding box vol." value={bboxVolumeStr} />}
+          {meshVolumeStr && <Field label="Mesh volume" value={meshVolumeStr} />}
           {metadata.validation && (
             <Field
               label="Watertight"
@@ -385,10 +403,42 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
               </Group>
             </div>
           )}
+          {filamentCost && resinCost ? (
+            <div>
+              <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb={4}>
+                Print cost (rough)
+              </Text>
+              <Stack gap={2}>
+                <Group justify="space-between" gap="xs">
+                  <Text size="sm">Filament</Text>
+                  <Text size="sm" c="dimmed">
+                    ~${filamentCost.usd.toFixed(2)} · {formatGrams(filamentCost.grams)}
+                  </Text>
+                </Group>
+                <Group justify="space-between" gap="xs">
+                  <Text size="sm">Resin</Text>
+                  <Text size="sm" c="dimmed">
+                    ~${resinCost.usd.toFixed(2)} · {formatGrams(resinCost.grams)}
+                  </Text>
+                </Group>
+              </Stack>
+            </div>
+          ) : (
+            <Text size="xs" c="dimmed">
+              Re-render this thumbnail to compute mesh volume and a print-cost
+              estimate.
+            </Text>
+          )}
         </>
       )}
     </Stack>
   );
+}
+
+function formatGrams(g: number): string {
+  if (g >= 1000) return `${(g / 1000).toFixed(2)} kg`;
+  if (g >= 10) return `${g.toFixed(0)} g`;
+  return `${g.toFixed(1)} g`;
 }
 
 function Field({ label, value }: { label: string; value: string }) {

@@ -3,7 +3,7 @@ import { disposeObject, loadModel } from './three/loaders';
 import { frameObject } from './three/framing';
 import { extract3MFEmbeddedThumbnail } from './three/three-mf-fast-path';
 import { extractMetadata, thumbnailOnlyMetadata } from './three/metadata';
-import { validateScene } from './three/validation';
+import { computeMeshVolume, validateScene } from './three/validation';
 import { DEFAULT_LIGHTING_STYLE, LightingRig, type LightingStyle } from './three/lighting';
 import { THUMB_WORKER_CHANNEL, THUMB_WORKER_RENDER_SIZE } from '@shared/thumb-worker-protocol';
 import type { ThumbRenderRequest, ThumbRenderResult } from '@shared/thumb-worker-protocol';
@@ -82,7 +82,8 @@ async function renderToPng(req: ThumbRenderRequest): Promise<RenderOutput> {
 
   // Extract metadata BEFORE disposal so the geometries/materials are still alive.
   const validation = validateScene(obj);
-  const metadata = extractMetadata(obj, 'gl', validation);
+  const meshVolumeMm3 = computeMeshVolume(obj);
+  const metadata = extractMetadata(obj, 'gl', validation, meshVolumeMm3);
 
   disposeObject(obj);
   lighting.dispose();
