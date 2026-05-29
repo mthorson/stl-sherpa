@@ -270,6 +270,13 @@ export function ThumbGrid({
                         onContextMenu={(e) => {
                           if (!onTileContextMenu) return;
                           e.preventDefault();
+                          // Finder/Bridge behavior: right-clicking outside the
+                          // current multi-selection collapses it to just the
+                          // clicked tile, so the menu acts on what's under the
+                          // cursor rather than the prior selection.
+                          if (!selectedIds.has(file.id)) {
+                            onTileClick(file.id, { shift: false, meta: false, ctrl: false });
+                          }
                           onTileContextMenu(file.id, e.clientX, e.clientY);
                         }}
                         onDragStart={(e) => {
