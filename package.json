@@ -118,7 +118,7 @@
     }
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.0",
+    "@electron/rebuild": "^4.0.4",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^25.9.1",
     "@types/react": "^18.3.11",
