@@ -332,6 +332,9 @@ export interface ExtractedMetadata {
   validation?: MeshValidation;
   /** Set when material textures were inspected during render. */
   textures?: TextureInfo[];
+  /** Signed-tetrahedron mesh volume in mm³. Absent on older rows or when
+   *  the mesh was too large to compute. Used by the print-cost estimator. */
+  meshVolumeMm3?: number;
 }
 
 export interface IpcApi {

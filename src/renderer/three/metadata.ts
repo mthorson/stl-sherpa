@@ -30,7 +30,8 @@ const TEXTURE_SLOTS = [
 export function extractMetadata(
   obj: THREE.Object3D,
   thumbSource: 'gl' | '3mf-embedded',
-  validation?: MeshValidation
+  validation?: MeshValidation,
+  meshVolumeMm3?: number | null
 ): ExtractedMetadata {
   let vertexCount = 0;
   let triangleCount = 0;
@@ -100,7 +101,8 @@ export function extractMetadata(
     thumbSource,
     materialNames: [...materialNames],
     validation,
-    textures: textures.length > 0 ? textures : undefined
+    textures: textures.length > 0 ? textures : undefined,
+    meshVolumeMm3: meshVolumeMm3 == null ? undefined : meshVolumeMm3
   };
 }
 

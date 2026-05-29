@@ -20,6 +20,7 @@ import {
   IconAppWindow,
   IconBox,
   IconCoffee,
+  IconCurrencyDollar,
   IconDatabase,
   IconPlus,
   IconRuler,
@@ -41,6 +42,10 @@ import {
   getRenderQualityPreset,
   type RenderQuality
 } from '@shared/render-quality';
+import {
+  DEFAULT_PRINT_COST_PREFS,
+  type PrintCostPreferences
+} from '@shared/print-cost';
 import { ipc } from '../ipc-client';
 import { savePreferences, usePreferences } from '../util/use-preferences';
 
@@ -78,6 +83,9 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
           <Tabs.Tab value="beds" leftSection={<IconBox size={14} />}>
             Print beds
           </Tabs.Tab>
+          <Tabs.Tab value="costs" leftSection={<IconCurrencyDollar size={14} />}>
+            Print costs
+          </Tabs.Tab>
           <Tabs.Tab value="watcher" leftSection={<IconWifi size={14} />}>
             Watcher
           </Tabs.Tab>
@@ -97,6 +105,9 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
         </Tabs.Panel>
         <Tabs.Panel value="beds" pt="md">
           <PrintBedsSection prefs={prefs} />
+        </Tabs.Panel>
+        <Tabs.Panel value="costs" pt="md">
+          <PrintCostsSection prefs={prefs} />
         </Tabs.Panel>
         <Tabs.Panel value="watcher" pt="md">
           <WatcherSection prefs={prefs} />
@@ -262,6 +273,120 @@ function PrintBedsSection({ prefs }: { prefs: PreferencesFile }) {
           Add
         </Button>
       </Group>
+    </Stack>
+  );
+}
+
+function PrintCostsSection({ prefs }: { prefs: PreferencesFile }) {
+  const current: PrintCostPreferences = prefs.printCost ?? DEFAULT_PRINT_COST_PREFS;
+  const [draft, setDraft] = useState<PrintCostPreferences>(current);
+
+  // Re-seed when the upstream prefs change (e.g. opened the modal after an
+  // edit elsewhere).
+  useEffect(() => {
+    setDraft(prefs.printCost ?? DEFAULT_PRINT_COST_PREFS);
+  }, [prefs.printCost]);
+
+  const apply = (next: PrintCostPreferences) => {
+    setDraft(next);
+    void savePreferences({ ...prefs, printCost: next });
+  };
+
+  return (
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">
+        Rough material-cost estimate shown in the metadata panel. Densities
+        assume PLA filament (1.24 g/cm³) and standard photopolymer resin
+        (1.10 g/cm³). Numbers are approximate — they ignore supports, rafts,
+        and waste.
+      </Text>
+
+      <Stack gap={4}>
+        <Text size="sm" fw={600}>
+          Filament
+        </Text>
+        <Group grow align="end">
+          <NumberInput
+            label="Price (USD)"
+            value={draft.filament.pricePerPackageUsd}
+            onChange={(v) => {
+              const n = Math.max(0, Number(v) || 0);
+              apply({ ...draft, filament: { ...draft.filament, pricePerPackageUsd: n } });
+            }}
+            min={0}
+            step={0.01}
+            decimalScale={2}
+            prefix="$"
+          />
+          <NumberInput
+            label="Per (kg)"
+            value={draft.filament.kgsPerPackage}
+            onChange={(v) => {
+              const n = Math.max(0.01, Number(v) || 1);
+              apply({ ...draft, filament: { ...draft.filament, kgsPerPackage: n } });
+            }}
+            min={0.01}
+            step={0.25}
+            decimalScale={2}
+          />
+        </Group>
+        <Text size="xs" c="dimmed">
+          e.g. $12.99 for 1 kg.
+        </Text>
+      </Stack>
+
+      <Stack gap={4}>
+        <Text size="sm" fw={600}>
+          Resin
+        </Text>
+        <Group grow align="end">
+          <NumberInput
+            label="Price (USD)"
+            value={draft.resin.pricePerPackageUsd}
+            onChange={(v) => {
+              const n = Math.max(0, Number(v) || 0);
+              apply({ ...draft, resin: { ...draft.resin, pricePerPackageUsd: n } });
+            }}
+            min={0}
+            step={0.01}
+            decimalScale={2}
+            prefix="$"
+          />
+          <NumberInput
+            label="Per (kg)"
+            value={draft.resin.kgsPerPackage}
+            onChange={(v) => {
+              const n = Math.max(0.01, Number(v) || 1);
+              apply({ ...draft, resin: { ...draft.resin, kgsPerPackage: n } });
+            }}
+            min={0.01}
+            step={0.25}
+            decimalScale={2}
+          />
+        </Group>
+        <Text size="xs" c="dimmed">
+          e.g. $25.99 for 2 kg.
+        </Text>
+      </Stack>
+
+      <Stack gap={4}>
+        <NumberInput
+          label="Filament fill factor"
+          value={draft.filamentFillFactor}
+          onChange={(v) => {
+            const n = Math.max(0.05, Math.min(1, Number(v) || 0.3));
+            apply({ ...draft, filamentFillFactor: n });
+          }}
+          min={0.05}
+          max={1}
+          step={0.05}
+          decimalScale={2}
+        />
+        <Text size="xs" c="dimmed">
+          Fraction of mesh volume that becomes filament. ~0.30 covers typical
+          walls + 20% infill. Resin always uses 100%.
+        </Text>
+      </Stack>
     </Stack>
   );
 }

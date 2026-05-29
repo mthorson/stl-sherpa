@@ -63,6 +63,9 @@ export interface PreferencesFile {
   /** Render quality tier for the interactive 3D preview (Low/Medium/High/Ultra).
    *  Background thumbnail rendering always uses Low for consistency. */
   renderQuality?: import('./render-quality').RenderQuality;
+  /** Material costs for the print-cost estimate shown in the metadata panel.
+   *  Falls back to DEFAULT_PRINT_COST_PREFS when absent. */
+  printCost?: import('./print-cost').PrintCostPreferences;
 }
 
 export function emptyPreferences(): PreferencesFile {
