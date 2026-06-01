@@ -95,7 +95,14 @@ void app.whenReady().then(() => {
     const lib = manager.getOpenLibrary(s.id);
     if (lib) queueRunner.reconcile(lib);
   }
-  createMainWindow();
+  const win = createMainWindow();
+
+  // Startup time: from process launch to the first window being ready to show.
+  // process.uptime() is wall-clock seconds since this process started, which
+  // captures module load + app.whenReady + library open all in one number.
+  win.once('ready-to-show', () => {
+    log.info('startup complete', { ms: Math.round(process.uptime() * 1000) });
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();

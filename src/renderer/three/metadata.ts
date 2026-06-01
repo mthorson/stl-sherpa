@@ -1,5 +1,11 @@
 import * as THREE from 'three';
-import type { ExtractedMetadata, MeshValidation, TextureInfo } from '@shared/types';
+import type {
+  ExtractedMetadata,
+  FormatMetadata,
+  MeshValidation,
+  PrintabilityReport,
+  TextureInfo
+} from '@shared/types';
 
 const MAX_MATERIAL_NAMES = 32;
 const MAX_TEXTURE_RECORDS = 32;
@@ -31,7 +37,9 @@ export function extractMetadata(
   obj: THREE.Object3D,
   thumbSource: 'gl' | '3mf-embedded',
   validation?: MeshValidation,
-  meshVolumeMm3?: number | null
+  meshVolumeMm3?: number | null,
+  printability?: PrintabilityReport | null,
+  format?: FormatMetadata | null
 ): ExtractedMetadata {
   let vertexCount = 0;
   let triangleCount = 0;
@@ -102,7 +110,9 @@ export function extractMetadata(
     materialNames: [...materialNames],
     validation,
     textures: textures.length > 0 ? textures : undefined,
-    meshVolumeMm3: meshVolumeMm3 == null ? undefined : meshVolumeMm3
+    meshVolumeMm3: meshVolumeMm3 == null ? undefined : meshVolumeMm3,
+    printability: printability ?? undefined,
+    format: format ?? undefined
   };
 }
 

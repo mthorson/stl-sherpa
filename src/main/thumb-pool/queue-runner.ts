@@ -10,9 +10,14 @@ import {
 } from '@shared/transient-errors';
 import { thumbAbsPath, thumbRelPath, writeThumbnailFile } from './storage';
 import { thumbPool } from './pool';
-import { scopedLogger } from '@main/logger';
+import { scopedLogger, time } from '@main/logger';
 
 const log = scopedLogger('queue-runner');
+
+// Per-file render durations at or above this many milliseconds log at `warn`
+// instead of `debug`, so a slow model stands out without drowning the log in
+// every routine render.
+const SLOW_RENDER_MS = 5_000;
 
 const RECONCILE_BATCH = 1000;
 const STALE_CLAIM_MS = 5 * 60_000;
@@ -171,12 +176,18 @@ export class ThumbQueueRunner extends EventEmitter {
     let metadata: ExtractedMetadata | null = null;
     let finalErr: string | null = null;
     try {
-      const out = await thumbPool.render({
-        absPath,
-        ext: file.ext,
-        lightingStyle: this.lightingStyle,
-        orientation: file.orientation
-      });
+      const out = await time(
+        log,
+        'thumb-render',
+        () =>
+          thumbPool.render({
+            absPath,
+            ext: file.ext,
+            lightingStyle: this.lightingStyle,
+            orientation: file.orientation
+          }),
+        { warnAboveMs: SLOW_RENDER_MS, meta: { libraryId: lib.entry.id, fileId, ext: file.ext } }
+      );
       png = out.png;
       metadata = out.metadata;
     } catch (err) {

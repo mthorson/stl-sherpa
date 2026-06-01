@@ -25,7 +25,13 @@ interface Migration {
   sql: string;
 }
 
-const MIGRATIONS: Migration[] = [
+/**
+ * The single source of truth for the schema. Exported so test helpers can
+ * build a fresh in-memory DB by looping the exact same list — a new migration
+ * added here is automatically picked up by every test (migration 010 was
+ * previously forgotten in hand-maintained per-test `freshDb()` helpers).
+ */
+export const MIGRATIONS: Migration[] = [
   { version: 1, sql: migration001 },
   { version: 2, sql: migration002 },
   { version: 3, sql: migration003 },
@@ -109,8 +115,52 @@ export function openLibraryDatabase(libraryRoot: string): Database.Database {
 
   applyMigrations(db);
   void isNew;
+  instrumentSlowQueries(db);
   return db;
 }
+
+/** Queries slower than this (ms) get logged once at warn — see instrumentSlowQueries. */
+const SLOW_QUERY_MS = 50;
+
+/**
+ * Wrap `db.prepare` so every prepared statement reports any `run`/`get`/`all`/
+ * `iterate` call that exceeds the slow-query threshold. This is the single
+ * choke point for DB access — the repos all go through `prepare` — so it
+ * instruments slow queries without touching each call site. The wrappers are
+ * transparent: arguments, return values, and `this` binding are preserved, and
+ * only the slow path logs (fast queries pay just a `performance.now()`
+ * subtraction).
+ */
+function instrumentSlowQueries(db: Database.Database, thresholdMs = SLOW_QUERY_MS): void {
+  const originalPrepare = db.prepare.bind(db);
+  const timedMethods = ['run', 'get', 'all', 'iterate'] as const;
+
+  db.prepare = function prepare(source: string) {
+    const stmt = originalPrepare(source);
+    const slots = stmt as unknown as Record<string, unknown>;
+    for (const method of timedMethods) {
+      const original = slots[method];
+      if (typeof original !== 'function') continue;
+      const fn = original as (...args: unknown[]) => unknown;
+      slots[method] = function timed(this: unknown, ...args: unknown[]) {
+        const start = performance.now();
+        const result = fn.apply(this, args);
+        const elapsed = performance.now() - start;
+        if (elapsed >= thresholdMs) {
+          log.warn('slow query', {
+            ms: Math.round(elapsed * 100) / 100,
+            method,
+            sql: stmt.source
+          });
+        }
+        return result;
+      };
+    }
+    return stmt;
+  } as typeof db.prepare;
+}
+
+export const __test = { instrumentSlowQueries, SLOW_QUERY_MS };
 
 export function readLibraryRow(db: Database.Database): { id: string; name: string } | null {
   return db.prepare('SELECT id, name FROM library LIMIT 1').get() as
