@@ -1,7 +1,6 @@
 import { ipcMain, shell } from 'electron';
-import { existsSync } from 'node:fs';
-import { rename, mkdir, copyFile } from 'node:fs/promises';
-import { dirname, basename } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { copyFile } from 'node:fs/promises';
 import { IPC } from '@shared/ipc-channels';
 import { broadcastLibraryEvent } from '@main/events';
 import type {
@@ -27,6 +26,7 @@ import { getOpenLibrary } from '@main/libraries/manager';
 import { scanner } from '@main/scanner/service';
 import { queueRunner } from '@main/thumb-pool/queue-runner';
 import { undoQueue } from '@main/undo/queue';
+import { moveOnDisk, renameEntryFor } from '@main/files/move-service';
 
 const broadcast = broadcastLibraryEvent;
 
@@ -52,20 +52,12 @@ async function reverseRename(
     if (existsSync(absOriginal)) {
       return { ok: false, error: `Original path is occupied: ${fromRelPath}` };
     }
-    await mkdir(dirname(absOriginal), { recursive: true });
-    await rename(absCurrent, absOriginal);
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
-  const slash = fromRelPath.lastIndexOf('/');
-  lib.files.applyRenames([
-    {
-      id: fileId,
-      toRelPath: fromRelPath,
-      toParentDir: slash < 0 ? '' : fromRelPath.slice(0, slash),
-      toFilename: slash < 0 ? fromRelPath : fromRelPath.slice(slash + 1)
-    }
-  ]);
+  const moved = await moveOnDisk(absCurrent, absOriginal);
+  if (!moved.ok) return moved;
+  lib.files.applyRenames([renameEntryFor(fileId, fromRelPath)]);
   broadcast({ kind: 'files-changed', libraryId });
   return { ok: true };
 }
@@ -282,38 +274,25 @@ export function registerFilesIpc(): void {
           if (!existsSync(absFrom)) {
             throw new Error(`Source file missing: ${item.fromRelPath}`);
           }
-          // Ensure the destination directory exists (allowed even when the
-          // template only changes the basename — it's a noop in that case).
-          await mkdir(dirname(absTo), { recursive: true });
-          await rename(absFrom, absTo);
+          // moveOnDisk ensures the destination directory exists (a noop when
+          // the template only changes the basename). Throw on failure to
+          // trigger the rollback below.
+          const moved = await moveOnDisk(absFrom, absTo);
+          if (!moved.ok) throw new Error(moved.error);
           done.push({ absFrom, absTo });
         }
       } catch (err) {
         // Roll back each completed move in reverse order. Best-effort: if a
-        // rollback fails the next iteration still tries.
+        // rollback fails the remaining ones still try.
         for (let i = done.length - 1; i >= 0; i--) {
-          try {
-            await rename(done[i].absTo, done[i].absFrom);
-          } catch {
-            // ignore
-          }
+          await moveOnDisk(done[i].absTo, done[i].absFrom);
         }
         return { ok: false, error: (err as Error).message };
       }
 
       // Apply the rename to the DB. The scanner's `applyRenames` does the
       // right thing (UPDATE rel_path/parent_dir/filename, updated_at).
-      lib.files.applyRenames(
-        plan.map((p) => {
-          const slash = p.toRelPath.lastIndexOf('/');
-          return {
-            id: p.fileId,
-            toRelPath: p.toRelPath,
-            toParentDir: slash < 0 ? '' : p.toRelPath.slice(0, slash),
-            toFilename: slash < 0 ? p.toRelPath : p.toRelPath.slice(slash + 1)
-          };
-        })
-      );
+      lib.files.applyRenames(plan.map((p) => renameEntryFor(p.fileId, p.toRelPath)));
       broadcast({ kind: 'files-changed', libraryId });
 
       // Capture the plan for undo. Reverse order so each individual rename
@@ -359,20 +338,9 @@ export function registerFilesIpc(): void {
 
       const absFrom = lib.resolver.toAbsolute(file.relPath);
       const absTo = lib.resolver.toAbsolute(toRelPath);
-      try {
-        await mkdir(dirname(absTo), { recursive: true });
-        await rename(absFrom, absTo);
-      } catch (err) {
-        return { ok: false, error: (err as Error).message };
-      }
-      lib.files.applyRenames([
-        {
-          id: fileId,
-          toRelPath,
-          toParentDir: cleanedParent,
-          toFilename: file.filename
-        }
-      ]);
+      const moved = await moveOnDisk(absFrom, absTo);
+      if (!moved.ok) return moved;
+      lib.files.applyRenames([renameEntryFor(fileId, toRelPath)]);
       broadcast({ kind: 'files-changed', libraryId });
 
       const fromRel = file.relPath;
@@ -421,7 +389,6 @@ export function registerFilesIpc(): void {
       // The watcher will eventually pick up the new file, but proactively
       // upsert + broadcast for snappier UI.
       try {
-        const { statSync } = await import('node:fs');
         const stat = statSync(absTo);
         lib.files.upsert({
           relPath: toRelPath,
@@ -460,8 +427,6 @@ export function registerFilesIpc(): void {
       // shell.trashItem has no programmatic restore counterpart, so this is
       // the closest thing we can give the user to an Undo for delete.
       broadcast({ kind: 'file-trashed', libraryId, relPath: file.relPath });
-      // basename of the source file isn't used here; suppress import warning.
-      void basename;
       return { ok: true };
     }
   );
