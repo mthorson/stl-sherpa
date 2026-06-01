@@ -6,6 +6,8 @@ import type {
   ColorLabel,
   ExtractedMetadata,
   FileRecord,
+  FormatMetadata,
+  PrintabilityReport,
   TagWithCount
 } from '@shared/types';
 import type { FileOrientation } from '@shared/orientation';
@@ -360,6 +362,7 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
               }
             />
           )}
+          {metadata.printability && <Printability report={metadata.printability} />}
           {metadata.textures && metadata.textures.length > 0 && (
             <div>
               <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
@@ -403,6 +406,7 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
               </Group>
             </div>
           )}
+          {metadata.format && <SourceMetadata format={metadata.format} />}
           {filamentCost && resinCost ? (
             <div>
               <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb={4}>
@@ -439,6 +443,57 @@ function formatGrams(g: number): string {
   if (g >= 1000) return `${(g / 1000).toFixed(2)} kg`;
   if (g >= 10) return `${g.toFixed(0)} g`;
   return `${g.toFixed(1)} g`;
+}
+
+const PRINTABILITY_COLOR: Record<PrintabilityReport['rating'], string> = {
+  good: 'green',
+  fair: 'yellow',
+  poor: 'red'
+};
+
+function Printability({ report }: { report: PrintabilityReport }) {
+  return (
+    <div>
+      <Group gap={6} align="center">
+        <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
+          Printability
+        </Text>
+        <Badge size="xs" variant="light" color={PRINTABILITY_COLOR[report.rating]}>
+          {report.score}/100 · {report.rating}
+        </Badge>
+      </Group>
+      {report.factors.length > 0 && (
+        <Text size="xs" c="dimmed" mt={2}>
+          {report.factors.join(' · ')}
+        </Text>
+      )}
+    </div>
+  );
+}
+
+function SourceMetadata({ format }: { format: FormatMetadata }) {
+  const rows: Array<[string, string]> = [];
+  if (format.title) rows.push(['Title', format.title]);
+  if (format.author) rows.push(['Author', format.author]);
+  if (format.license) rows.push(['License', format.license]);
+  if (format.copyright) rows.push(['Copyright', format.copyright]);
+  if (format.application) rows.push(['Created with', format.application]);
+  if (format.solidName) rows.push(['Solid name', format.solidName]);
+  else if (format.stlHeader) rows.push(['STL header', format.stlHeader]);
+  if (rows.length === 0) return null;
+
+  return (
+    <div>
+      <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb={2}>
+        Source
+      </Text>
+      <Stack gap={2}>
+        {rows.map(([label, value]) => (
+          <Field key={label} label={label} value={value} />
+        ))}
+      </Stack>
+    </div>
+  );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
