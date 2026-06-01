@@ -1,15 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRequire } from 'node:module';
-import migration001 from '../migrations/001_init.sql?raw';
-import migration002 from '../migrations/002_fts_triggers.sql?raw';
-import migration003 from '../migrations/003_thumb_errors.sql?raw';
-import migration004 from '../migrations/004_file_orientation.sql?raw';
-import migration005 from '../migrations/005_collections.sql?raw';
-import migration006 from '../migrations/006_ratings_labels.sql?raw';
-import migration007 from '../migrations/007_smart_collections.sql?raw';
-import migration008 from '../migrations/008_notes.sql?raw';
-import migration009 from '../migrations/009_hierarchical_tags.sql?raw';
-import migration010 from '../migrations/010_file_camera.sql?raw';
+import { canRun, freshDb } from '../test-utils';
 import { createFilesRepo } from './files';
 import {
   RENDERER_VERSION,
@@ -19,31 +9,6 @@ import {
 import { createThumbErrorsRepo } from './thumb-errors';
 import { createThumbJobsRepo, PRIORITY_BACKGROUND } from './thumb-jobs';
 import { createTagsRepo } from './tags';
-
-const localRequire = createRequire(import.meta.url);
-let DatabaseCtor: typeof import('better-sqlite3') | null = null;
-try {
-  DatabaseCtor = localRequire('better-sqlite3');
-} catch {
-  DatabaseCtor = null;
-}
-const canRun = DatabaseCtor !== null;
-
-function freshDb() {
-  const db = new DatabaseCtor!(':memory:');
-  db.pragma('foreign_keys = ON');
-  db.exec(migration001);
-  db.exec(migration002);
-  db.exec(migration003);
-  db.exec(migration004);
-  db.exec(migration005);
-  db.exec(migration006);
-  db.exec(migration007);
-  db.exec(migration008);
-  db.exec(migration009);
-  db.exec(migration010);
-  return db;
-}
 
 function freshThumb(fileId: number, mtime: number, version = RENDERER_VERSION): ThumbnailRow {
   return {

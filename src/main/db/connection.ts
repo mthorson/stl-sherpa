@@ -24,7 +24,13 @@ interface Migration {
   sql: string;
 }
 
-const MIGRATIONS: Migration[] = [
+/**
+ * The single source of truth for the schema. Exported so test helpers can
+ * build a fresh in-memory DB by looping the exact same list — a new migration
+ * added here is automatically picked up by every test (migration 010 was
+ * previously forgotten in hand-maintained per-test `freshDb()` helpers).
+ */
+export const MIGRATIONS: Migration[] = [
   { version: 1, sql: migration001 },
   { version: 2, sql: migration002 },
   { version: 3, sql: migration003 },
