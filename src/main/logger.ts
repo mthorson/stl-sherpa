@@ -25,6 +25,14 @@ export function initLogger(initialLevel: LogLevel = DEFAULT_LOG_LEVEL): void {
   log.transports.file.maxSize = 5 * 1024 * 1024;
   log.transports.file.level = initialLevel;
   log.transports.console.level = initialLevel;
+  // Disable the main→renderer broadcast transport. In dev electron-log
+  // defaults this to 'silly', which echoes every main-process log into every
+  // renderer's console. Combined with the thumb-pool's `console-message`
+  // bridge (which re-logs worker console output through main), that echo
+  // forms an infinite feedback loop: main log → renderer console → captured
+  // by the bridge → main log → … We only forward renderer→main, never the
+  // reverse, so this transport has no use here.
+  log.transports.ipc.level = false;
   // `initialize` is what makes the renderer-side `electron-log/renderer`
   // import work — it registers the IPC handlers that receive forwarded
   // log entries from any renderer process (including thumb workers).
@@ -34,7 +42,7 @@ export function initLogger(initialLevel: LogLevel = DEFAULT_LOG_LEVEL): void {
 export function setLogLevel(level: LogLevel): void {
   log.transports.file.level = level;
   log.transports.console.level = level;
-  log.transports.ipc.level = level;
+  // `ipc` (main→renderer broadcast) stays disabled — see initLogger.
 }
 
 export function getLogsDir(): string {
