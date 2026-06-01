@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolve, join } from 'node:path';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { PathResolver } from '../../shared/paths';
-import { walkLibrary } from './walker';
+import { walkLibrary, WalkAbortedError } from './walker';
 import type { UpsertInput } from '../db/repos/files';
 
 const TESTFILES = resolve(__dirname, '../../../testfiles');
@@ -57,5 +58,60 @@ describe.runIf(hasFixtures)('walkLibrary against testfiles/', () => {
     for (const p of seenRelPaths) {
       expect(p.split('/').some((seg) => seg.startsWith('.'))).toBe(false);
     }
+  });
+
+});
+
+describe('walkLibrary cancellation', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'meshflask-walk-'));
+    const sub = join(root, 'parts');
+    mkdirSync(sub);
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(sub, `part-${i}.stl`), `solid p${i}\nendsolid p${i}\n`);
+    }
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('rejects immediately when the signal is already aborted', async () => {
+    const resolver = new PathResolver(root);
+    const controller = new AbortController();
+    controller.abort();
+    const batches: UpsertInput[][] = [];
+    await expect(
+      walkLibrary(resolver, {
+        signal: controller.signal,
+        onBatch: (batch) => {
+          batches.push(batch);
+        }
+      })
+    ).rejects.toBeInstanceOf(WalkAbortedError);
+    // Aborted before descending into the root → no batches were delivered.
+    expect(batches).toHaveLength(0);
+  });
+
+  it('stops early when aborted from inside onBatch', async () => {
+    const resolver = new PathResolver(root);
+    const controller = new AbortController();
+    let seen = 0;
+    await expect(
+      walkLibrary(resolver, {
+        // Small batch so the first flush happens well before the walk finishes.
+        batchSize: 1,
+        signal: controller.signal,
+        onBatch: (batch) => {
+          seen += batch.length;
+          controller.abort();
+        }
+      })
+    ).rejects.toBeInstanceOf(WalkAbortedError);
+    // We aborted after the very first file, so far fewer than all 10 were seen.
+    expect(seen).toBeLessThan(10);
+    expect(seen).toBeGreaterThan(0);
   });
 });

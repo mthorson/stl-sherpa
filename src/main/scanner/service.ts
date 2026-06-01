@@ -8,7 +8,7 @@ import {
   type RenameEntry,
   type UpsertInput
 } from '@main/db/repos/files';
-import { walkLibrary } from './walker';
+import { walkLibrary, WalkAbortedError } from './walker';
 import { startWatcher, type LibraryWatcher } from './watcher';
 import { getAll as getPreferences } from '@main/preferences/store';
 import { scopedLogger } from '@main/logger';
@@ -21,11 +21,14 @@ interface PerLibrary {
   progress: ScanProgress;
   watcher?: LibraryWatcher;
   changeFlushTimer?: NodeJS.Timeout;
+  /** Set while a scan is running so it can be cancelled mid-walk. */
+  abort?: AbortController;
 }
 
 export interface ScannerEvents {
   'scan-progress': (libraryId: string, progress: ScanProgress) => void;
   'scan-complete': (libraryId: string, progress: ScanProgress) => void;
+  'scan-cancelled': (libraryId: string, progress: ScanProgress) => void;
   'files-changed': (libraryId: string) => void;
 }
 
@@ -55,6 +58,7 @@ export class ScannerService extends EventEmitter {
   detach(libraryId: string): void {
     const lib = this.libs.get(libraryId);
     if (!lib) return;
+    lib.abort?.abort();
     if (lib.changeFlushTimer) clearTimeout(lib.changeFlushTimer);
     void lib.watcher?.close();
     this.libs.delete(libraryId);
@@ -72,6 +76,17 @@ export class ScannerService extends EventEmitter {
     }
     void this.runScan(libraryId);
     return { ok: true };
+  }
+
+  /**
+   * Abort an in-progress scan. The walk throws an AbortError, runScan catches
+   * it and leaves the DB untouched (the diff is only applied after the walk
+   * completes), so partial state stays consistent. No-op if nothing is scanning.
+   */
+  cancelScan(libraryId: string): void {
+    const lib = this.libs.get(libraryId);
+    if (!lib || lib.progress.state !== 'scanning') return;
+    lib.abort?.abort();
   }
 
   getProgress(libraryId: string): ScanProgress | null {
@@ -93,6 +108,9 @@ export class ScannerService extends EventEmitter {
       lib.watcher = undefined;
     }
 
+    const abort = new AbortController();
+    lib.abort = abort;
+
     this.updateProgress(libraryId, {
       ...emptyProgress(libraryId),
       state: 'scanning',
@@ -108,6 +126,7 @@ export class ScannerService extends EventEmitter {
       const seen: UpsertInput[] = [];
       await walkLibrary(lib.resolver, {
         batchSize: 500,
+        signal: abort.signal,
         onBatch: async (batch: UpsertInput[]) => {
           seen.push(...batch);
           this.updateProgress(libraryId, { filesSeen: seen.length });
@@ -178,6 +197,7 @@ export class ScannerService extends EventEmitter {
         finishedAt: Date.now()
       };
       lib.progress = finalProgress;
+      lib.abort = undefined;
       this.emit('scan-complete', libraryId, finalProgress);
       log.info('scan complete', {
         libraryId,
@@ -203,7 +223,25 @@ export class ScannerService extends EventEmitter {
         { nasPollIntervalMs }
       );
     } catch (err) {
+      // A cancelled scan threw before any DB diff was applied (the diff runs
+      // only after the walk resolves), so partial state is consistent — nothing
+      // was inserted, updated, or removed. Surface it as 'cancelled', not an
+      // error, and don't start the watcher.
+      if (err instanceof WalkAbortedError) {
+        const cancelledProgress: ScanProgress = {
+          ...lib.progress,
+          state: 'cancelled',
+          finishedAt: Date.now(),
+          error: undefined
+        };
+        lib.progress = cancelledProgress;
+        lib.abort = undefined;
+        this.emit('scan-cancelled', libraryId, cancelledProgress);
+        log.info('scan cancelled', { libraryId, filesSeen: cancelledProgress.filesSeen });
+        return;
+      }
       log.error('scan failed', { libraryId, err: (err as Error).message });
+      lib.abort = undefined;
       this.updateProgress(libraryId, {
         state: 'error',
         finishedAt: Date.now(),
