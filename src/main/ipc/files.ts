@@ -96,6 +96,10 @@ export function registerFilesIpc(): void {
     return scanner.getProgress(libraryId);
   });
 
+  ipcMain.handle(IPC.cancelScan, async (_e, libraryId: string) => {
+    scanner.cancelScan(libraryId);
+  });
+
   ipcMain.handle(IPC.bumpVisibleThumbs, async (_e, libraryId: string, fileIds: number[]) => {
     const lib = getOpenLibrary(libraryId);
     if (lib) queueRunner.bumpVisible(lib, fileIds);
@@ -446,6 +450,9 @@ export function registerFilesIpc(): void {
     broadcast({ kind: 'scan-complete', libraryId, progress });
     const lib = getOpenLibrary(libraryId);
     if (lib) queueRunner.reconcile(lib);
+  });
+  scanner.on('scan-cancelled', (libraryId: string, progress: ScanProgress) => {
+    broadcast({ kind: 'scan-cancelled', libraryId, progress });
   });
   scanner.on('files-changed', (libraryId: string) => {
     broadcast({ kind: 'files-changed', libraryId });

@@ -7,9 +7,11 @@ import { IPC } from '@shared/ipc-channels';
 import type { ExternalAppRegistration, PreferencesFile } from '@shared/preferences';
 import * as store from '@main/preferences/store';
 import { getOpenLibrary } from '@main/libraries/manager';
-import { rebuildThumbnailCache, purgeOrphanThumbs } from '@main/cache/management';
+import { rebuildThumbnailCache, purgeOrphanThumbs, cacheRebuilds } from '@main/cache/management';
 import { DEFAULT_LOG_LEVEL, openLogsFolder, setLogLevel, scopedLogger } from '@main/logger';
 import { runUndo } from '@main/undo/runner';
+import { broadcastLibraryEvent } from '@main/events';
+import type { CacheProgress } from '@shared/types';
 
 const log = scopedLogger('shell');
 
@@ -154,6 +156,24 @@ export function registerPreferencesIpc(): void {
     const lib = getOpenLibrary(libraryId);
     if (!lib) return;
     rebuildThumbnailCache(lib);
+  });
+
+  ipcMain.handle(IPC.getCacheStatus, async (_e, libraryId: string): Promise<CacheProgress | null> => {
+    return cacheRebuilds.getStatus(libraryId);
+  });
+
+  ipcMain.handle(IPC.cancelCacheRebuild, async (_e, libraryId: string) => {
+    const lib = getOpenLibrary(libraryId);
+    if (!lib) return;
+    cacheRebuilds.cancel(lib);
+  });
+
+  // Forward cache-rebuild progress to every renderer window.
+  cacheRebuilds.on('progress', (libraryId: string, progress: CacheProgress) => {
+    broadcastLibraryEvent({ kind: 'cache-rebuild-progress', libraryId, progress });
+  });
+  cacheRebuilds.on('complete', (libraryId: string, progress: CacheProgress) => {
+    broadcastLibraryEvent({ kind: 'cache-rebuild-complete', libraryId, progress });
   });
 
   ipcMain.handle(

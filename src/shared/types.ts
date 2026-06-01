@@ -159,7 +159,7 @@ export interface FolderTreeNode {
 
 export interface ScanProgress {
   libraryId: string;
-  state: 'idle' | 'scanning' | 'watching' | 'error';
+  state: 'idle' | 'scanning' | 'watching' | 'error' | 'cancelled';
   filesSeen: number;
   inserted: number;
   updated: number;
@@ -171,9 +171,27 @@ export interface ScanProgress {
   error?: string;
 }
 
+/**
+ * Progress for a thumbnail-cache rebuild. `total` is the number of files that
+ * needed (re-)rendering when the rebuild began; `done` counts renders that have
+ * since completed (success or persistent failure). Both are zero when no
+ * rebuild is running.
+ */
+export interface CacheProgress {
+  libraryId: string;
+  state: 'idle' | 'rebuilding' | 'complete' | 'cancelled';
+  done: number;
+  total: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
 export type LibraryFilesEvent =
   | { kind: 'scan-progress'; libraryId: string; progress: ScanProgress }
   | { kind: 'scan-complete'; libraryId: string; progress: ScanProgress }
+  | { kind: 'scan-cancelled'; libraryId: string; progress: ScanProgress }
+  | { kind: 'cache-rebuild-progress'; libraryId: string; progress: CacheProgress }
+  | { kind: 'cache-rebuild-complete'; libraryId: string; progress: CacheProgress }
   | { kind: 'files-changed'; libraryId: string }
   | { kind: 'thumb-rendered'; libraryId: string; fileId: number }
   | { kind: 'thumb-failed'; libraryId: string; fileId: number; error: string }
@@ -354,6 +372,8 @@ export interface IpcApi {
   getFile(req: GetFileRequest): Promise<FileRecord | null>;
   rescan(libraryId: string): Promise<{ ok: boolean; error?: string }>;
   getScanStatus(libraryId: string): Promise<ScanProgress | null>;
+  /** Abort an in-progress scan for a library. No-op if nothing is scanning. */
+  cancelScan(libraryId: string): Promise<void>;
 
   bumpVisibleThumbs(libraryId: string, fileIds: number[]): Promise<void>;
   rerenderThumb(libraryId: string, fileId: number): Promise<void>;
@@ -441,6 +461,10 @@ export interface IpcApi {
   ): Promise<BatchRenameResult>;
   setFileNotes(libraryId: string, fileId: number, notes: string): Promise<void>;
   rebuildThumbCache(libraryId: string): Promise<void>;
+  /** Current cache-rebuild progress, or null if no rebuild has run this session. */
+  getCacheStatus(libraryId: string): Promise<CacheProgress | null>;
+  /** Abort an in-progress cache rebuild: stops the queue and drops pending jobs. */
+  cancelCacheRebuild(libraryId: string): Promise<void>;
   purgeOrphanThumbs(libraryId: string): Promise<{ removed: number }>;
   getPreferences(): Promise<import('./preferences').PreferencesFile>;
   setPreferences(prefs: import('./preferences').PreferencesFile): Promise<void>;

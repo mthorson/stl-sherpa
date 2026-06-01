@@ -5,6 +5,7 @@ import type {
   AddLibraryResult,
   BatchRenameItem,
   BatchRenameResult,
+  CacheProgress,
   CameraState,
   CollectionRecord,
   CollectionWithCount,
@@ -60,6 +61,8 @@ const api: IpcApi = {
     ipcRenderer.invoke(IPC.rescan, libraryId) as Promise<{ ok: boolean; error?: string }>,
   getScanStatus: (libraryId: string) =>
     ipcRenderer.invoke(IPC.getScanStatus, libraryId) as Promise<ScanProgress | null>,
+  cancelScan: (libraryId: string) =>
+    ipcRenderer.invoke(IPC.cancelScan, libraryId) as Promise<void>,
 
   bumpVisibleThumbs: (libraryId: string, fileIds: number[]) =>
     ipcRenderer.invoke(IPC.bumpVisibleThumbs, libraryId, fileIds) as Promise<void>,
@@ -155,6 +158,10 @@ const api: IpcApi = {
     ipcRenderer.invoke(IPC.setFileNotes, libraryId, fileId, notes) as Promise<void>,
   rebuildThumbCache: (libraryId: string) =>
     ipcRenderer.invoke(IPC.rebuildThumbCache, libraryId) as Promise<void>,
+  getCacheStatus: (libraryId: string) =>
+    ipcRenderer.invoke(IPC.getCacheStatus, libraryId) as Promise<CacheProgress | null>,
+  cancelCacheRebuild: (libraryId: string) =>
+    ipcRenderer.invoke(IPC.cancelCacheRebuild, libraryId) as Promise<void>,
   purgeOrphanThumbs: (libraryId: string) =>
     ipcRenderer.invoke(IPC.purgeOrphanThumbs, libraryId) as Promise<{ removed: number }>,
   getPreferences: () => ipcRenderer.invoke(IPC.getPreferences) as Promise<PreferencesFile>,
