@@ -55,3 +55,67 @@ export async function openLogsFolder(): Promise<void> {
 
 export const logger = log;
 export const scopedLogger = (scope: string) => log.scope(scope);
+
+/** Subset of the electron-log scoped logger that the timing helper needs. */
+type TimingLogger = Pick<ReturnType<typeof log.scope>, 'debug' | 'warn'>;
+
+export interface TimeOptions {
+  /**
+   * Durations at or above this many milliseconds log at `warn` instead of
+   * `debug`. Lets a noisy hot path stay quiet until it actually regresses.
+   * Omit to always log at `debug`.
+   */
+  warnAboveMs?: number;
+  /** Extra structured fields to attach to the timing log line. */
+  meta?: Record<string, unknown>;
+}
+
+function logDuration(
+  logger: TimingLogger,
+  name: string,
+  ms: number,
+  opts: TimeOptions | undefined,
+  failed: boolean
+): void {
+  const fields = { ms: Math.round(ms * 100) / 100, ...(failed ? { failed: true } : {}), ...opts?.meta };
+  const slow = opts?.warnAboveMs !== undefined && ms >= opts.warnAboveMs;
+  if (slow || failed) logger.warn(name, fields);
+  else logger.debug(name, fields);
+}
+
+/**
+ * Lightweight performance timing. Wraps `fn`, measures wall-clock duration via
+ * `performance.now()`, and logs it through the given scoped logger. Works for
+ * both sync and async functions — when `fn` returns a promise the timing
+ * resolves with it. Errors are timed (and logged with `failed: true`) but
+ * never swallowed: the original error/rejection always propagates.
+ */
+export function time<T>(
+  logger: TimingLogger,
+  name: string,
+  fn: () => T,
+  opts?: TimeOptions
+): T {
+  const start = performance.now();
+  let result: T;
+  try {
+    result = fn();
+  } catch (err) {
+    logDuration(logger, name, performance.now() - start, opts, true);
+    throw err;
+  }
+  if (result instanceof Promise) {
+    return result.then(
+      (value) => {
+        logDuration(logger, name, performance.now() - start, opts, false);
+        return value;
+      },
+      (err) => {
+        logDuration(logger, name, performance.now() - start, opts, true);
+        throw err;
+      }
+    ) as T;
+  }
+  logDuration(logger, name, performance.now() - start, opts, false);
+  return result;
+}
