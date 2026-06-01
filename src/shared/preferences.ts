@@ -40,6 +40,16 @@ export interface ExternalAppRegistration {
 
 export type Unit = 'mm' | 'in';
 
+// Duplicated rather than imported from src/main/logger.ts so this shared
+// module stays pure — main-only imports would break renderer typecheck and
+// vitest (no Electron `app` in system Node).
+export const LOG_LEVELS = ['error', 'warn', 'info', 'debug'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
+
+export function isLogLevel(value: unknown): value is LogLevel {
+  return typeof value === 'string' && (LOG_LEVELS as readonly string[]).includes(value);
+}
+
 export interface PrintBed {
   id: string;
   name: string;
@@ -66,6 +76,9 @@ export interface PreferencesFile {
   /** Material costs for the print-cost estimate shown in the metadata panel.
    *  Falls back to DEFAULT_PRINT_COST_PREFS when absent. */
   printCost?: import('./print-cost').PrintCostPreferences;
+  /** Verbosity for the main-process file log. Default 'info'. Changes apply
+   *  immediately without a restart. */
+  logLevel?: LogLevel;
 }
 
 export function emptyPreferences(): PreferencesFile {

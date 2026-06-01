@@ -9,6 +9,9 @@ import { POOL_SHUTDOWN_ERROR, WORKER_SHUTDOWN_ERROR } from '@shared/transient-er
 import type { ExtractedMetadata } from '@shared/types';
 import type { LightingStyle } from '@shared/lighting-types';
 import type { FileOrientation } from '@shared/orientation';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('thumb-pool');
 
 export interface RenderOutput {
   png: Uint8Array;
@@ -141,6 +144,32 @@ export class ThumbPool {
 
   private spawnWorker(): Worker {
     const id = this.nextWorkerId++;
+    // ─────────────────────────────────────────────────────────────────────
+    // SECURITY: thumb-worker BrowserWindow threat model
+    //
+    // The worker runs with nodeIntegration:true / contextIsolation:false /
+    // sandbox:false / webSecurity:false. These are normally renderer-side
+    // red flags, but the worker has no user-controlled attack surface:
+    //
+    //  1. It only loads our own bundled `thumb-worker.html` (loadURL/
+    //     loadFile below) — never arbitrary URLs and never user input.
+    //  2. Its only inputs are ThumbRenderRequest messages this main process
+    //     sends over IPC. The `absPath` field is always produced by
+    //     `PathResolver.toAbsolute(file.relPath)` on a row this main
+    //     process pulled from the library DB; `relPath` is validated for
+    //     traversal segments in PathResolver, so the worker's `fs.readFile`
+    //     cannot be steered outside an attached library by IPC payload.
+    //  3. webSecurity is off because Three.js loaders need to follow
+    //     sibling `.bin` / texture references via `file://` URLs from the
+    //     model's directory — there's no remote origin in the picture.
+    //  4. Untrusted file content (the 3MF zip parse) goes through the
+    //     zip-safety guards in src/renderer/three/zip-safety.ts before
+    //     fflate is allowed to allocate decompression buffers.
+    //
+    // If you ever want to accept absPath from the renderer side (drag/drop
+    // import, "open this loose file" feature, etc.), validate it against
+    // an attached library mount in the main process FIRST.
+    // ─────────────────────────────────────────────────────────────────────
     const window = new BrowserWindow({
       show: false,
       width: 600,
@@ -173,6 +202,7 @@ export class ThumbPool {
 
     window.webContents.on('render-process-gone', (_e, details) => {
       // Detach + reject + respawn. A bad model file shouldn't take down the app.
+      log.error('worker render process gone', { workerId: id, reason: details.reason });
       const err = new Error(`Worker render process exited: ${details.reason}`);
       this.destroyWorker(worker, err);
       const idx = this.workers.indexOf(worker);
@@ -186,15 +216,22 @@ export class ThumbPool {
     // (e.g. an unresolved import in dev mode) is silent — jobs just sit in
     // the wait queue forever with nothing in any visible log.
     window.webContents.on('did-fail-load', (_e, code, description, url) => {
-      console.error(`[thumb-worker ${id}] did-fail-load (${code}) ${description} url=${url}`);
+      log.error('worker did-fail-load', { workerId: id, code, description, url });
     });
     window.webContents.on(
       'console-message',
       // Older signature: (event, level, message, line, sourceId). Cast the
       // any-typed handler so this compiles across Electron versions.
       ((_e: unknown, level: number, message: string, line: number, sourceId: string) => {
-        const sink = level >= 2 ? console.warn : console.log;
-        sink(`[thumb-worker ${id}] ${message} (${sourceId}:${line})`);
+        // Ignore electron-log's own renderer-side output. Worker code that logs
+        // via `electron-log/renderer` already reaches main through the dedicated
+        // log IPC channel, so re-capturing its console print here would only
+        // duplicate it — and feed a potential feedback loop. This bridge exists
+        // solely to surface raw breakage that bypasses electron-log (unresolved
+        // imports, Three.js console errors, etc.).
+        if (sourceId.includes('electron-log')) return;
+        const sink = level >= 2 ? log.warn : log.info;
+        sink(`[worker ${id}] ${message}`, { sourceId, line });
       }) as never
     );
 
@@ -215,6 +252,12 @@ export class ThumbPool {
       const stuckJob = worker.currentJob;
       worker.currentJob = null;
       worker.currentTimer = null;
+      log.warn('worker render timeout', {
+        workerId: worker.id,
+        jobId: stuckJob?.req.jobId,
+        absPath: stuckJob?.req.absPath,
+        timeoutMs: this.perJobTimeoutMs
+      });
       if (stuckJob) stuckJob.reject(new Error(`Render timed out after ${this.perJobTimeoutMs}ms`));
       this.recycle(worker);
     }, this.perJobTimeoutMs);
@@ -244,6 +287,7 @@ export class ThumbPool {
       this.destroyWorker(worker, new Error(WORKER_SHUTDOWN_ERROR));
       return;
     }
+    log.info('recycling worker', { workerId: worker.id, jobsRendered: worker.jobsRendered });
     this.destroyWorker(worker, new Error('recycle'));
     const idx = this.workers.indexOf(worker);
     if (idx >= 0) this.workers.splice(idx, 1);

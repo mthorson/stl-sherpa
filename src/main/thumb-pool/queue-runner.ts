@@ -10,6 +10,9 @@ import {
 } from '@shared/transient-errors';
 import { thumbAbsPath, thumbRelPath, writeThumbnailFile } from './storage';
 import { thumbPool } from './pool';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('queue-runner');
 
 const RECONCILE_BATCH = 1000;
 const STALE_CLAIM_MS = 5 * 60_000;
@@ -226,6 +229,13 @@ export class ThumbQueueRunner extends EventEmitter {
       safeDb(lib, () => {
         const attempts = readJobAttempts(lib, jobId);
         if (attempts >= MAX_ATTEMPTS) {
+          log.error('thumb render giving up', {
+            libraryId: lib.entry.id,
+            fileId: file.id,
+            relPath: file.relPath,
+            attempts,
+            err: message
+          });
           lib.thumbErrors.upsert({
             fileId: file.id,
             error: message,
@@ -236,6 +246,13 @@ export class ThumbQueueRunner extends EventEmitter {
           });
           lib.thumbJobs.finish(jobId);
         } else {
+          log.warn('thumb render failed, will retry', {
+            libraryId: lib.entry.id,
+            fileId: file.id,
+            relPath: file.relPath,
+            attempts,
+            err: message
+          });
           lib.thumbJobs.fail(jobId, message);
         }
       });

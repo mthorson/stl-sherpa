@@ -11,6 +11,9 @@ import {
 import { walkLibrary } from './walker';
 import { startWatcher, type LibraryWatcher } from './watcher';
 import { getAll as getPreferences } from '@main/preferences/store';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('scanner');
 
 interface PerLibrary {
   resolver: PathResolver;
@@ -97,6 +100,7 @@ export class ScannerService extends EventEmitter {
       finishedAt: undefined,
       error: undefined
     });
+    log.info('scan started', { libraryId });
 
     try {
       // Two-pass scan so we can detect renames before applying inserts/deletes.
@@ -175,6 +179,14 @@ export class ScannerService extends EventEmitter {
       };
       lib.progress = finalProgress;
       this.emit('scan-complete', libraryId, finalProgress);
+      log.info('scan complete', {
+        libraryId,
+        filesSeen: seen.length,
+        inserted: upsertResult.inserted,
+        updated: upsertResult.updated,
+        renamed: renamedCount,
+        removed: removedCount
+      });
 
       const prefs = getPreferences();
       const nasPollIntervalMs = (prefs.nasPollIntervalSec ?? 10) * 1000;
@@ -184,12 +196,14 @@ export class ScannerService extends EventEmitter {
         {
           onChange: () => this.scheduleChangeFlush(libraryId),
           onError: (err) => {
+            log.warn('watcher error', { libraryId, err: err.message });
             this.updateProgress(libraryId, { state: 'error', error: err.message });
           }
         },
         { nasPollIntervalMs }
       );
     } catch (err) {
+      log.error('scan failed', { libraryId, err: (err as Error).message });
       this.updateProgress(libraryId, {
         state: 'error',
         finishedAt: Date.now(),

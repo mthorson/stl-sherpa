@@ -8,6 +8,9 @@ import {
   type ExternalAppRegistration,
   type PreferencesFile
 } from '@shared/preferences';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('preferences');
 
 const PREFERENCES_FILENAME = 'preferences.json';
 
@@ -23,8 +26,16 @@ function read(): PreferencesFile {
     if (parsed && parsed.version === 1 && Array.isArray(parsed.externalApps)) {
       return parsed as PreferencesFile;
     }
-  } catch {
+    log.warn('preferences.json schema mismatch, falling back to defaults', {
+      path,
+      version: parsed?.version
+    });
+  } catch (err) {
     // Treat corrupted prefs as empty rather than crashing the app on startup.
+    log.warn('preferences.json unreadable, falling back to defaults', {
+      path,
+      err: (err as Error).message
+    });
   }
   return emptyPreferences();
 }

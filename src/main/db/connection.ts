@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { looksLikeNetworkMount } from '@shared/paths';
+import { scopedLogger } from '@main/logger';
 import migration001 from './migrations/001_init.sql?raw';
 import migration002 from './migrations/002_fts_triggers.sql?raw';
 import migration003 from './migrations/003_thumb_errors.sql?raw';
@@ -15,6 +16,8 @@ import migration010 from './migrations/010_file_camera.sql?raw';
 
 export const SCHEMA_VERSION = 10;
 export const DB_FILENAME = '.meshFlask.db';
+
+const log = scopedLogger('db');
 
 interface Migration {
   version: number;
@@ -68,19 +71,25 @@ function applyMigrations(db: Database.Database): void {
   const baseline = detectBaseline(db);
   for (const m of MIGRATIONS) {
     if (baseline >= m.version) continue;
-    const tx = db.transaction(() => {
-      db.exec(m.sql);
-      setUserVersion(db, m.version);
-      // Keep library.schema_version in lock-step for human inspection if the
-      // table exists at this point.
-      const hasLib = db
-        .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='library' LIMIT 1`)
-        .get();
-      if (hasLib) {
-        db.prepare('UPDATE library SET schema_version = ?').run(m.version);
-      }
-    });
-    tx();
+    try {
+      const tx = db.transaction(() => {
+        db.exec(m.sql);
+        setUserVersion(db, m.version);
+        // Keep library.schema_version in lock-step for human inspection if the
+        // table exists at this point.
+        const hasLib = db
+          .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='library' LIMIT 1`)
+          .get();
+        if (hasLib) {
+          db.prepare('UPDATE library SET schema_version = ?').run(m.version);
+        }
+      });
+      tx();
+      log.info('migration applied', { version: m.version });
+    } catch (err) {
+      log.error('migration failed', { version: m.version, err: (err as Error).message });
+      throw err;
+    }
   }
 }
 
@@ -114,4 +123,17 @@ export function insertLibraryRow(
   db.prepare(
     'INSERT INTO library (id, name, schema_version, created_at) VALUES (?, ?, ?, ?)'
   ).run(args.id, args.name, SCHEMA_VERSION, Date.now());
+}
+
+/**
+ * `PRAGMA integrity_check` returns one row with value `'ok'` when the DB is
+ * healthy, or one or more rows describing errors. We collapse multi-row
+ * failures to the first error so the notification stays terse.
+ */
+export function runIntegrityCheck(db: Database.Database): { ok: true } | { ok: false; error: string } {
+  const rows = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
+  if (rows.length === 1 && rows[0].integrity_check === 'ok') return { ok: true };
+  const first = rows[0]?.integrity_check ?? 'unknown error';
+  const more = rows.length > 1 ? ` (+${rows.length - 1} more)` : '';
+  return { ok: false, error: first + more };
 }

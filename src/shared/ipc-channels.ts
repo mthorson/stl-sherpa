@@ -54,7 +54,17 @@ export const IPC = {
   duplicateFile: 'files:duplicate',
   deleteFile: 'files:delete',
   exportCollectionZip: 'export:collectionZip',
-  exportContactSheet: 'export:contactSheet'
+  exportContactSheet: 'export:contactSheet',
+  openLogsFolder: 'logs:openFolder',
+  /**
+   * Renderer-triggered Undo. The main side pops the top entry from the
+   * in-memory undo queue and runs its inverse. Returns whether anything
+   * was popped, the entry's label for toast feedback, and (when the inverse
+   * itself failed) an error message.
+   */
+  undo: 'undo:run',
+  /** Open the OS Trash / Recycle Bin (best-effort, platform-specific). */
+  openTrash: 'shell:openTrash'
 } as const;
 
 /** One-way main → renderer events (sent via webContents.send). */

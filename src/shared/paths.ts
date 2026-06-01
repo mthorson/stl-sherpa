@@ -58,6 +58,9 @@ export class PathResolver {
     if (!isAbsolute(absPath)) {
       throw new Error(`toRelative requires an absolute path, got: ${absPath}`);
     }
+    if (absPath.includes('\0')) {
+      throw new Error('toRelative: path contains NUL byte');
+    }
     const absPosix = toPosix(absPath);
     const root = this.mountPosix;
     const compareAbs = this.isWindowsMount ? absPosix.toLowerCase() : absPosix;
@@ -74,13 +77,29 @@ export class PathResolver {
   /**
    * Convert a POSIX-relative DB path back into an absolute path on this
    * machine using the host OS separator.
+   *
+   * Security: rejects any input that would escape the library root. All IPC
+   * handlers that touch the filesystem funnel through here, so this is the
+   * single chokepoint enforcing that user-supplied (or DB-supplied)
+   * relative paths cannot traverse to arbitrary disk locations.
    */
   toAbsolute(relPath: string): string {
     if (isAbsolute(relPath)) {
       throw new Error(`toAbsolute requires a relative path, got: ${relPath}`);
     }
+    if (relPath.includes('\0')) {
+      throw new Error('toAbsolute: path contains NUL byte');
+    }
     const cleanRel = relPath.replace(/^[/\\]+/, '');
     if (cleanRel === '') return this.mountPath;
+    // Reject any `..` segment. We check segments rather than substrings so a
+    // legitimate filename like `model..bak` is allowed; only the literal `..`
+    // path component (split on either separator) escapes the mount.
+    for (const seg of cleanRel.split(/[/\\]+/)) {
+      if (seg === '..') {
+        throw new Error(`toAbsolute: path escapes library root: ${relPath}`);
+      }
+    }
     if (this.isWindowsMount) {
       return this.mountPath + '\\' + cleanRel.replace(/\//g, '\\');
     }

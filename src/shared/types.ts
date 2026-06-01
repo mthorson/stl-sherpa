@@ -178,7 +178,11 @@ export type LibraryFilesEvent =
   | { kind: 'thumb-rendered'; libraryId: string; fileId: number }
   | { kind: 'thumb-failed'; libraryId: string; fileId: number; error: string }
   | { kind: 'tags-changed'; libraryId: string; fileId?: number }
-  | { kind: 'collections-changed'; libraryId: string; collectionId?: number };
+  | { kind: 'collections-changed'; libraryId: string; collectionId?: number }
+  | { kind: 'integrity-failed'; libraryId: string; libraryName: string; error: string }
+  | { kind: 'file-trashed'; libraryId: string; relPath: string }
+  | { kind: 'undo-completed'; libraryId: string; label: string }
+  | { kind: 'undo-failed'; libraryId: string; label: string; error: string };
 
 export interface ListFilesRequest {
   libraryId: string;
@@ -454,6 +458,23 @@ export interface IpcApi {
   exportCollectionZip(libraryId: string, collectionId: number): Promise<ExportResult>;
   /** Pop a Save dialog, then render an HTML contact sheet of the supplied files as PDF. */
   exportContactSheet(libraryId: string, fileIds: number[]): Promise<ExportResult>;
+
+  /** Open the per-machine logs directory in the OS file manager. */
+  openLogsFolder(): Promise<void>;
+
+  /** Open the OS Trash / Recycle Bin so the user can restore a just-deleted file. */
+  openTrash(): Promise<void>;
+
+  /**
+   * Pop and execute the most recent undo entry. Returns whether anything was
+   * undone — the renderer doesn't need detailed status because failures are
+   * already broadcast as library events.
+   */
+  undo(): Promise<
+    | { ok: false; reason: 'empty' }
+    | { ok: true; label: string }
+    | { ok: false; reason: 'failed'; label: string; error: string }
+  >;
 
   listExternalApps(): Promise<import('./preferences').ExternalAppRegistration[]>;
   /**

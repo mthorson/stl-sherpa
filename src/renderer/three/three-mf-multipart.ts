@@ -1,5 +1,6 @@
 import { unzipSync, zipSync, type Unzipped, type Zippable } from 'fflate';
 import { extract3MFEmbeddedThumbnail } from './three-mf-fast-path';
+import { assertSafeArchive, isSafeArchiveEntryName } from './zip-safety';
 
 /**
  * Bambu Studio / PrusaSlicer / OrcaSlicer exports use the 3MF Production
@@ -39,8 +40,13 @@ export function inspectThreeMF(buffer: ArrayBuffer): ThreeMFInspection {
   let sizes: Map<string, number>;
   try {
     sizes = collectFileSizes(bytes);
+    // Zip-bomb / zip-slip defense: cap entry count + total decompressed size,
+    // and reject archives that contain entry names attempting to escape.
+    assertSafeArchive(sizes);
   } catch {
-    return { kind: 'single' };
+    // A failed safety check (or an unreadable central directory) falls
+    // through to the embedded PNG path so the user still gets a preview.
+    return { kind: 'too-large', embeddedPng: extract3MFEmbeddedThumbnail(buffer) };
   }
 
   const mainModelName = readMainModelName(bytes);
@@ -116,7 +122,9 @@ function readMainModelName(bytes: Uint8Array): string | null {
     if (!/Type="[^"]*3dmodel[^"]*"/i.test(tag)) continue;
     const target = tag.match(/Target="([^"]+)"/i)?.[1];
     if (!target) continue;
-    return normalizeZipPath(target);
+    const normalized = normalizeZipPath(target);
+    if (!isSafeArchiveEntryName(normalized)) continue;
+    return normalized;
   }
   return null;
 }
@@ -126,7 +134,13 @@ function extractReferencedPaths(mainXml: string): string[] {
   const re = /<component\b[^>]*\bp:path="([^"]+)"[^>]*\/?>/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(mainXml)) !== null) {
-    seen.add(normalizeZipPath(m[1]));
+    const normalized = normalizeZipPath(m[1]);
+    // Skip any referenced path that looks like a traversal attempt. These
+    // would otherwise be looked up in the zip's name table; an attacker
+    // can't reach outside the archive, but we want a clear refusal rather
+    // than silent acceptance of a poisoned reference.
+    if (!isSafeArchiveEntryName(normalized)) continue;
+    seen.add(normalized);
   }
   return Array.from(seen);
 }

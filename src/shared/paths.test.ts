@@ -85,6 +85,28 @@ describe('PathResolver — POSIX mount (macOS NAS)', () => {
     const trailing = new PathResolver('/Volumes/Studio/');
     expect(trailing.toRelative('/Volumes/Studio/models/x.glb')).toBe('models/x.glb');
   });
+
+  it('rejects .. segments that would escape the mount', () => {
+    expect(() => r.toAbsolute('../etc/passwd')).toThrow(/escapes library root/);
+    expect(() => r.toAbsolute('models/../../etc/passwd')).toThrow(/escapes library root/);
+    expect(() => r.toAbsolute('models/foo/..')).toThrow(/escapes library root/);
+    expect(() => r.toAbsolute('..')).toThrow(/escapes library root/);
+    expect(() => r.toAbsolute('models\\..\\..\\etc')).toThrow(/escapes library root/);
+    // Leading-separator strip must not let a traversal slip through. A
+    // leading `/` is rejected at the absolute-path check first, but either
+    // refusal blocks the escape.
+    expect(() => r.toAbsolute('/../etc')).toThrow(/relative path|escapes library root/);
+  });
+
+  it('allows filenames that merely contain .. as substring', () => {
+    expect(r.toAbsolute('models/file..bak.glb')).toBe('/Volumes/Studio/models/file..bak.glb');
+    expect(r.toAbsolute('..hidden/x.glb')).toBe('/Volumes/Studio/..hidden/x.glb');
+  });
+
+  it('rejects NUL bytes in paths', () => {
+    expect(() => r.toAbsolute('models/x\0.glb')).toThrow(/NUL byte/);
+    expect(() => r.toRelative('/Volumes/Studio/x\0.glb')).toThrow(/NUL byte/);
+  });
 });
 
 describe('PathResolver — Windows drive mount', () => {

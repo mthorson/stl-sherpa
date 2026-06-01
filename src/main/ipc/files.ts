@@ -1,8 +1,8 @@
-import { BrowserWindow, ipcMain, shell } from 'electron';
-import { existsSync } from 'node:fs';
-import { rename, mkdir, copyFile } from 'node:fs/promises';
-import { dirname, basename } from 'node:path';
-import { IPC, IPC_EVENT } from '@shared/ipc-channels';
+import { ipcMain, shell } from 'electron';
+import { existsSync, statSync } from 'node:fs';
+import { copyFile } from 'node:fs/promises';
+import { IPC } from '@shared/ipc-channels';
+import { broadcastLibraryEvent } from '@main/events';
 import type {
   BatchRenameItem,
   BatchRenameResult,
@@ -12,7 +12,6 @@ import type {
   FileRecord,
   FolderTreeNode,
   GetFileRequest,
-  LibraryFilesEvent,
   ListFilesRequest,
   ListFoldersRequest,
   MoveFileResult,
@@ -26,11 +25,41 @@ import { isCameraState } from '@shared/types';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { scanner } from '@main/scanner/service';
 import { queueRunner } from '@main/thumb-pool/queue-runner';
+import { undoQueue } from '@main/undo/queue';
+import { moveOnDisk, renameEntryFor } from '@main/files/move-service';
 
-function broadcast(event: LibraryFilesEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC_EVENT.libraryEvent, event);
+const broadcast = broadcastLibraryEvent;
+
+/**
+ * Reverse a single move/rename: rename the file back to `fromRelPath` on
+ * disk, then update the DB to match. Returns ok/error rather than throwing
+ * so the undo runner can surface the failure to the user without crashing.
+ */
+async function reverseRename(
+  libraryId: string,
+  fileId: number,
+  fromRelPath: string,
+  toRelPath: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const lib = getOpenLibrary(libraryId);
+  if (!lib) return { ok: false, error: 'Library no longer open' };
+  const absCurrent = lib.resolver.toAbsolute(toRelPath);
+  const absOriginal = lib.resolver.toAbsolute(fromRelPath);
+  try {
+    if (!existsSync(absCurrent)) {
+      return { ok: false, error: `File no longer at ${toRelPath}` };
+    }
+    if (existsSync(absOriginal)) {
+      return { ok: false, error: `Original path is occupied: ${fromRelPath}` };
+    }
+  } catch (err) {
+    return { ok: false, error: (err as Error).message };
   }
+  const moved = await moveOnDisk(absCurrent, absOriginal);
+  if (!moved.ok) return moved;
+  lib.files.applyRenames([renameEntryFor(fileId, fromRelPath)]);
+  broadcast({ kind: 'files-changed', libraryId });
+  return { ok: true };
 }
 
 export function registerFilesIpc(): void {
@@ -245,39 +274,50 @@ export function registerFilesIpc(): void {
           if (!existsSync(absFrom)) {
             throw new Error(`Source file missing: ${item.fromRelPath}`);
           }
-          // Ensure the destination directory exists (allowed even when the
-          // template only changes the basename — it's a noop in that case).
-          await mkdir(dirname(absTo), { recursive: true });
-          await rename(absFrom, absTo);
+          // moveOnDisk ensures the destination directory exists (a noop when
+          // the template only changes the basename). Throw on failure to
+          // trigger the rollback below.
+          const moved = await moveOnDisk(absFrom, absTo);
+          if (!moved.ok) throw new Error(moved.error);
           done.push({ absFrom, absTo });
         }
       } catch (err) {
         // Roll back each completed move in reverse order. Best-effort: if a
-        // rollback fails the next iteration still tries.
+        // rollback fails the remaining ones still try.
         for (let i = done.length - 1; i >= 0; i--) {
-          try {
-            await rename(done[i].absTo, done[i].absFrom);
-          } catch {
-            // ignore
-          }
+          await moveOnDisk(done[i].absTo, done[i].absFrom);
         }
         return { ok: false, error: (err as Error).message };
       }
 
       // Apply the rename to the DB. The scanner's `applyRenames` does the
       // right thing (UPDATE rel_path/parent_dir/filename, updated_at).
-      lib.files.applyRenames(
-        plan.map((p) => {
-          const slash = p.toRelPath.lastIndexOf('/');
-          return {
-            id: p.fileId,
-            toRelPath: p.toRelPath,
-            toParentDir: slash < 0 ? '' : p.toRelPath.slice(0, slash),
-            toFilename: slash < 0 ? p.toRelPath : p.toRelPath.slice(slash + 1)
-          };
-        })
-      );
+      lib.files.applyRenames(plan.map((p) => renameEntryFor(p.fileId, p.toRelPath)));
       broadcast({ kind: 'files-changed', libraryId });
+
+      // Capture the plan for undo. Reverse order so each individual rename
+      // back doesn't collide with a not-yet-undone successor.
+      const snapshotPlan = plan.map((p) => ({ ...p }));
+      undoQueue.push({
+        libraryId,
+        label:
+          snapshotPlan.length === 1
+            ? `Rename ${snapshotPlan[0].fromRelPath.split('/').pop()}`
+            : `Rename ${snapshotPlan.length} files`,
+        undo: async () => {
+          const errors: string[] = [];
+          for (let i = snapshotPlan.length - 1; i >= 0; i--) {
+            const item = snapshotPlan[i];
+            const r = await reverseRename(libraryId, item.fileId, item.fromRelPath, item.toRelPath);
+            if (!r.ok) errors.push(`${item.toRelPath}: ${r.error}`);
+          }
+          if (errors.length > 0) {
+            return { ok: false, error: errors.join('; ') };
+          }
+          return { ok: true };
+        }
+      });
+
       return { ok: true, renamed: plan.length };
     }
   );
@@ -298,21 +338,18 @@ export function registerFilesIpc(): void {
 
       const absFrom = lib.resolver.toAbsolute(file.relPath);
       const absTo = lib.resolver.toAbsolute(toRelPath);
-      try {
-        await mkdir(dirname(absTo), { recursive: true });
-        await rename(absFrom, absTo);
-      } catch (err) {
-        return { ok: false, error: (err as Error).message };
-      }
-      lib.files.applyRenames([
-        {
-          id: fileId,
-          toRelPath,
-          toParentDir: cleanedParent,
-          toFilename: file.filename
-        }
-      ]);
+      const moved = await moveOnDisk(absFrom, absTo);
+      if (!moved.ok) return moved;
+      lib.files.applyRenames([renameEntryFor(fileId, toRelPath)]);
       broadcast({ kind: 'files-changed', libraryId });
+
+      const fromRel = file.relPath;
+      undoQueue.push({
+        libraryId,
+        label: `Move ${file.filename}`,
+        undo: () => reverseRename(libraryId, fileId, fromRel, toRelPath)
+      });
+
       return { ok: true, toRelPath };
     }
   );
@@ -352,7 +389,6 @@ export function registerFilesIpc(): void {
       // The watcher will eventually pick up the new file, but proactively
       // upsert + broadcast for snappier UI.
       try {
-        const { statSync } = await import('node:fs');
         const stat = statSync(absTo);
         lib.files.upsert({
           relPath: toRelPath,
@@ -387,8 +423,10 @@ export function registerFilesIpc(): void {
       }
       lib.files.deleteByRelPath(file.relPath);
       broadcast({ kind: 'files-changed', libraryId });
-      // basename of the source file isn't used here; suppress import warning.
-      void basename;
+      // Surface the trashing so the renderer can offer "Show in Trash" —
+      // shell.trashItem has no programmatic restore counterpart, so this is
+      // the closest thing we can give the user to an Undo for delete.
+      broadcast({ kind: 'file-trashed', libraryId, relPath: file.relPath });
       return { ok: true };
     }
   );
