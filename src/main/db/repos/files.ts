@@ -18,6 +18,7 @@ interface FileRow {
   size_bytes: number;
   mtime_ms: number;
   sha256: string | null;
+  content_sha256: string | null;
   metadata_json: string | null;
   orientation_json: string | null;
   camera_json: string | null;
@@ -65,6 +66,7 @@ function rowToRecord(libraryId: string, row: FileRow): FileRecord {
     sizeBytes: row.size_bytes,
     mtimeMs: row.mtime_ms,
     sha256: row.sha256,
+    contentSha256: row.content_sha256,
     metadataJson: row.metadata_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -128,6 +130,17 @@ export interface FilesRepo {
   /** Set sha256 (computed lazily during thumbnail render). */
   setSha256(fileId: number, sha256: string): void;
   /**
+   * Persist content-hash digests for many files in one transaction. Used by
+   * the scanner after hashing new/changed files for exact-dup detection.
+   */
+  setContentSha256Many(entries: Array<{ id: number; sha256: string }>): void;
+  /**
+   * Files whose `content_sha256` is still NULL — new rows the scanner just
+   * inserted, plus any pre-migration rows that predate the column. Returns a
+   * lightweight {id, relPath} projection the scanner uses to hash them.
+   */
+  listMissingContentHash(): Array<{ id: number; relPath: string }>;
+  /**
    * Persist or clear a per-file orientation override. `null` clears the
    * override so the file falls back to its format default.
    */
@@ -156,7 +169,10 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
     ON CONFLICT(rel_path) DO UPDATE SET
       size_bytes = excluded.size_bytes,
       mtime_ms = excluded.mtime_ms,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      -- Content changed (size/mtime differ), so the stored hash is stale.
+      -- Clear it; the scanner re-hashes rows whose content_sha256 is NULL.
+      content_sha256 = NULL
     WHERE files.size_bytes != excluded.size_bytes
        OR files.mtime_ms != excluded.mtime_ms
   `);
@@ -203,6 +219,12 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
   );
   const setSha256Stmt = db.prepare<[string, number]>(
     `UPDATE files SET sha256 = ? WHERE id = ?`
+  );
+  const setContentSha256Stmt = db.prepare<[string, number]>(
+    `UPDATE files SET content_sha256 = ? WHERE id = ?`
+  );
+  const listMissingContentHashStmt = db.prepare(
+    `SELECT id, rel_path AS relPath FROM files WHERE content_sha256 IS NULL`
   );
   const setOrientationStmt = db.prepare<[string | null, number]>(
     `UPDATE files SET orientation_json = ? WHERE id = ?`
@@ -390,19 +412,35 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
         }
       }
 
+      if (req.duplicatesOnly) {
+        // Exact-content duplicates: the file's hash must be shared by at least
+        // one other file. The subquery is computed over the whole library (not
+        // the filtered set) so a file still counts as a duplicate even when its
+        // twin lives in another folder/scope.
+        where.push(`files.content_sha256 IN (
+          SELECT content_sha256 FROM files
+          WHERE content_sha256 IS NOT NULL
+          GROUP BY content_sha256
+          HAVING COUNT(*) > 1
+        )`);
+      }
+
       const whereSql = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
       // Order priority:
       //   1. explicit user sort if provided (overrides everything)
-      //   2. manual collection position
-      //   3. FTS rank if a query is set
-      //   4. filename fallback
+      //   2. duplicate view → group adjacent by hash so dup sets read together
+      //   3. manual collection position
+      //   4. FTS rank if a query is set
+      //   5. filename fallback
       const orderSql = req.sort
         ? buildOrderClause(req.sort)
-        : req.collectionId != null
-          ? ' ORDER BY cf.position, files.filename COLLATE NOCASE'
-          : ftsExpr
-            ? ' ORDER BY bm25(files_fts), files.filename COLLATE NOCASE'
-            : ' ORDER BY files.filename COLLATE NOCASE';
+        : req.duplicatesOnly
+          ? ' ORDER BY files.content_sha256, files.filename COLLATE NOCASE'
+          : req.collectionId != null
+            ? ' ORDER BY cf.position, files.filename COLLATE NOCASE'
+            : ftsExpr
+              ? ' ORDER BY bm25(files_fts), files.filename COLLATE NOCASE'
+              : ' ORDER BY files.filename COLLATE NOCASE';
 
       const sql = `
         SELECT files.*,
@@ -424,6 +462,18 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
 
     setSha256(fileId, sha256) {
       setSha256Stmt.run(sha256, fileId);
+    },
+
+    setContentSha256Many(entries) {
+      if (entries.length === 0) return;
+      const tx = db.transaction((rows: Array<{ id: number; sha256: string }>) => {
+        for (const r of rows) setContentSha256Stmt.run(r.sha256, r.id);
+      });
+      tx(entries);
+    },
+
+    listMissingContentHash() {
+      return listMissingContentHashStmt.all() as Array<{ id: number; relPath: string }>;
     },
 
     setOrientation(fileId, orientation) {

@@ -13,8 +13,9 @@ import migration007 from './migrations/007_smart_collections.sql?raw';
 import migration008 from './migrations/008_notes.sql?raw';
 import migration009 from './migrations/009_hierarchical_tags.sql?raw';
 import migration010 from './migrations/010_file_camera.sql?raw';
+import migration011 from './migrations/011_content_sha256.sql?raw';
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 export const DB_FILENAME = '.meshFlask.db';
 
 const log = scopedLogger('db');
@@ -40,7 +41,8 @@ export const MIGRATIONS: Migration[] = [
   { version: 7, sql: migration007 },
   { version: 8, sql: migration008 },
   { version: 9, sql: migration009 },
-  { version: 10, sql: migration010 }
+  { version: 10, sql: migration010 },
+  { version: 11, sql: migration011 }
 ];
 
 /**
