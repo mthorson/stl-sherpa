@@ -12,6 +12,20 @@ export interface WalkOptions {
   batchSize?: number;
   /** Called with each batch of supported files as the walk progresses. */
   onBatch?: (batch: UpsertInput[]) => Promise<void> | void;
+  /**
+   * Cancellation signal. Checked before descending into each directory and
+   * before every flush; when aborted the walk throws an `AbortError` so the
+   * caller can leave its state untouched.
+   */
+  signal?: AbortSignal;
+}
+
+/** Thrown by walkLibrary when its AbortSignal fires mid-walk. */
+export class WalkAbortedError extends Error {
+  constructor() {
+    super('Scan aborted');
+    this.name = 'AbortError';
+  }
 }
 
 const DEFAULT_IGNORE: ReadonlySet<string> = new Set([
@@ -38,9 +52,15 @@ export async function walkLibrary(
   const batchSize = options.batchSize ?? 200;
   const root = resolver.getMountPath();
 
+  const signal = options.signal;
+
   let buffer: UpsertInput[] = [];
   const seenRelPaths = new Set<string>();
   let totalSeen = 0;
+
+  const throwIfAborted = () => {
+    if (signal?.aborted) throw new WalkAbortedError();
+  };
 
   const flush = async () => {
     if (buffer.length === 0) return;
@@ -49,6 +69,7 @@ export async function walkLibrary(
   };
 
   const visit = async (absDir: string): Promise<void> => {
+    throwIfAborted();
     let entries: Dirent[];
     try {
       entries = await readdir(absDir, { withFileTypes: true, encoding: 'utf8' });
@@ -98,7 +119,10 @@ export async function walkLibrary(
         mtimeMs
       });
 
-      if (buffer.length >= batchSize) await flush();
+      if (buffer.length >= batchSize) {
+        await flush();
+        throwIfAborted();
+      }
     }
   };
 

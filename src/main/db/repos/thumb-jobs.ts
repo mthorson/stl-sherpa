@@ -63,6 +63,12 @@ export interface ThumbJobsRepo {
   releaseForRetry(jobId: number): void;
   /** Reap stale claims (claimed_by another process or > maxAgeMs ago). */
   reapStale(thisProcess: string, maxAgeMs: number): number;
+  /**
+   * Drop every unclaimed job, returning how many were removed. In-flight
+   * (claimed) jobs are left alone — they finish on their own. Used to cancel a
+   * cache rebuild without yanking work out from under a running worker.
+   */
+  clearPending(): number;
   pendingCount(): number;
   inFlightCount(): number;
 }
@@ -123,6 +129,8 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     WHERE claimed_at IS NOT NULL
       AND (claimed_by != ? OR claimed_at < ?)
   `);
+
+  const clearPendingStmt = db.prepare(`DELETE FROM thumb_jobs WHERE claimed_at IS NULL`);
 
   const pendingStmt = db.prepare(`SELECT COUNT(*) AS c FROM thumb_jobs WHERE claimed_at IS NULL`);
   const inFlightStmt = db.prepare(
@@ -191,6 +199,9 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     reapStale(thisProcess, maxAgeMs) {
       const cutoff = Date.now() - maxAgeMs;
       return reapStmt.run(thisProcess, cutoff).changes;
+    },
+    clearPending() {
+      return clearPendingStmt.run().changes;
     },
     pendingCount() {
       return (pendingStmt.get() as { c: number }).c;

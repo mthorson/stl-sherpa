@@ -8,13 +8,14 @@ import {
   Divider,
   Group,
   Loader,
+  Progress,
   ScrollArea,
   Select,
   Stack,
   Text,
   Tooltip
 } from '@mantine/core';
-import { IconCoffee, IconCopy, IconRefresh, IconSettings } from '@tabler/icons-react';
+import { IconCoffee, IconCopy, IconRefresh, IconSettings, IconX } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import {
   Panel,
@@ -29,6 +30,7 @@ import type {
   FileRecord,
   FolderTreeNode,
   LibrarySummary,
+  CacheProgress,
   ScanProgress,
   TagWithCount
 } from '@shared/types';
@@ -204,6 +206,7 @@ export function App() {
     existing: CollectionWithCount | null;
   }>({ open: false, existing: null });
   const [scanStatus, setScanStatus] = useState<ScanProgress | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<CacheProgress | null>(null);
   const [thumbVersions, setThumbVersions] = useState<Map<number, number>>(() => new Map());
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -487,6 +490,8 @@ export function App() {
   const refreshScanStatus = useCallback(async (libraryId: string) => {
     const status = await ipc.getScanStatus(libraryId);
     setScanStatus(status);
+    const cache = await ipc.getCacheStatus(libraryId);
+    setCacheStatus(cache);
   }, []);
 
   const clearSelection = useCallback(() => {
@@ -687,6 +692,32 @@ export function App() {
         setScanStatus(event.progress);
         void refreshTree(event.libraryId);
         reloadFiles();
+        return;
+      }
+      if (event.kind === 'scan-cancelled') {
+        setScanStatus(event.progress);
+        notifications.show({
+          color: 'gray',
+          title: 'Scan cancelled',
+          message: `Stopped after ${event.progress.filesSeen} files. Nothing was changed.`,
+          autoClose: 3000
+        });
+        return;
+      }
+      if (event.kind === 'cache-rebuild-progress') {
+        setCacheStatus(event.progress);
+        return;
+      }
+      if (event.kind === 'cache-rebuild-complete') {
+        setCacheStatus(event.progress);
+        if (event.progress.state === 'cancelled') {
+          notifications.show({
+            color: 'gray',
+            title: 'Thumbnail rebuild cancelled',
+            message: `Rendered ${event.progress.done} of ${event.progress.total} before stopping.`,
+            autoClose: 3000
+          });
+        }
         return;
       }
       if (event.kind === 'files-changed') {
@@ -960,6 +991,16 @@ export function App() {
     if (!result.ok) {
       notifications.show({ color: 'orange', title: 'Rescan', message: result.error ?? 'failed' });
     }
+  }, [selectedLibraryId]);
+
+  const handleCancelScan = useCallback(() => {
+    if (!selectedLibraryId) return;
+    void ipc.cancelScan(selectedLibraryId);
+  }, [selectedLibraryId]);
+
+  const handleCancelCacheRebuild = useCallback(() => {
+    if (!selectedLibraryId) return;
+    void ipc.cancelCacheRebuild(selectedLibraryId);
   }, [selectedLibraryId]);
 
   const handleRerenderThumb = useCallback(
@@ -1582,7 +1623,8 @@ export function App() {
               scope={viewScope}
             />
             <div style={{ flex: 1 }} />
-            <ScanStatusBadge status={scanStatus} />
+            <CacheRebuildStatus status={cacheStatus} onCancel={handleCancelCacheRebuild} />
+            <ScanStatusBadge status={scanStatus} onCancel={handleCancelScan} />
             <Tooltip label="Rescan library">
               <ActionIcon
                 variant="subtle"
@@ -1908,7 +1950,13 @@ function Breadcrumbs({
   );
 }
 
-function ScanStatusBadge({ status }: { status: ScanProgress | null }) {
+function ScanStatusBadge({
+  status,
+  onCancel
+}: {
+  status: ScanProgress | null;
+  onCancel: () => void;
+}) {
   if (!status) return null;
   if (status.state === 'scanning') {
     return (
@@ -1917,6 +1965,11 @@ function ScanStatusBadge({ status }: { status: ScanProgress | null }) {
         <Text size="xs" c="dimmed">
           Scanning · {status.filesSeen} files
         </Text>
+        <Tooltip label="Cancel scan">
+          <ActionIcon variant="subtle" color="gray" size="sm" onClick={onCancel} aria-label="Cancel scan">
+            <IconX size={14} />
+          </ActionIcon>
+        </Tooltip>
       </Group>
     );
   }
@@ -1925,6 +1978,13 @@ function ScanStatusBadge({ status }: { status: ScanProgress | null }) {
       <Badge size="sm" color="red" variant="light">
         Scan error
       </Badge>
+    );
+  }
+  if (status.state === 'cancelled') {
+    return (
+      <Text size="xs" c="dimmed">
+        Scan cancelled · {status.filesSeen} files
+      </Text>
     );
   }
   if (status.state === 'watching') {
@@ -1936,6 +1996,41 @@ function ScanStatusBadge({ status }: { status: ScanProgress | null }) {
     );
   }
   return null;
+}
+
+/**
+ * Toolbar widget for an in-progress thumbnail-cache rebuild: a determinate
+ * progress bar (done/total) plus a cancel button. Renders nothing unless a
+ * rebuild is actively running.
+ */
+function CacheRebuildStatus({
+  status,
+  onCancel
+}: {
+  status: CacheProgress | null;
+  onCancel: () => void;
+}) {
+  if (!status || status.state !== 'rebuilding') return null;
+  const pct = status.total > 0 ? Math.round((status.done / status.total) * 100) : 0;
+  return (
+    <Group gap={6} wrap="nowrap">
+      <Text size="xs" c="dimmed">
+        Rebuilding thumbnails · {status.done}/{status.total}
+      </Text>
+      <Progress value={pct} w={90} size="sm" radius="xl" aria-label="Thumbnail rebuild progress" />
+      <Tooltip label="Cancel rebuild">
+        <ActionIcon
+          variant="subtle"
+          color="gray"
+          size="sm"
+          onClick={onCancel}
+          aria-label="Cancel rebuild"
+        >
+          <IconX size={14} />
+        </ActionIcon>
+      </Tooltip>
+    </Group>
+  );
 }
 
 function OfflineState({ library }: { library: LibrarySummary }) {
