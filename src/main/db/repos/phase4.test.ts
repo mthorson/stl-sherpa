@@ -10,6 +10,7 @@ import migration007 from '../migrations/007_smart_collections.sql?raw';
 import migration008 from '../migrations/008_notes.sql?raw';
 import migration009 from '../migrations/009_hierarchical_tags.sql?raw';
 import migration010 from '../migrations/010_file_camera.sql?raw';
+import migration011 from '../migrations/011_content_sha256.sql?raw';
 import { createFilesRepo } from './files';
 import { createTagsRepo } from './tags';
 
@@ -35,6 +36,7 @@ function freshDb() {
   db.exec(migration008);
   db.exec(migration009);
   db.exec(migration010);
+  db.exec(migration011);
   return db;
 }
 

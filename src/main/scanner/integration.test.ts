@@ -6,6 +6,13 @@ import migration001 from '../db/migrations/001_init.sql?raw';
 import migration002 from '../db/migrations/002_fts_triggers.sql?raw';
 import migration003 from '../db/migrations/003_thumb_errors.sql?raw';
 import migration004 from '../db/migrations/004_file_orientation.sql?raw';
+import migration005 from '../db/migrations/005_collections.sql?raw';
+import migration006 from '../db/migrations/006_ratings_labels.sql?raw';
+import migration007 from '../db/migrations/007_smart_collections.sql?raw';
+import migration008 from '../db/migrations/008_notes.sql?raw';
+import migration009 from '../db/migrations/009_hierarchical_tags.sql?raw';
+import migration010 from '../db/migrations/010_file_camera.sql?raw';
+import migration011 from '../db/migrations/011_content_sha256.sql?raw';
 import { PathResolver } from '../../shared/paths';
 import { buildFolderTree } from '../../shared/folder-tree';
 import { walkLibrary } from './walker';
@@ -38,6 +45,13 @@ describe.runIf(canRun)('Phase 2 backend end-to-end against testfiles/', () => {
     db.exec(migration002);
     db.exec(migration003);
     db.exec(migration004);
+    db.exec(migration005);
+    db.exec(migration006);
+    db.exec(migration007);
+    db.exec(migration008);
+    db.exec(migration009);
+    db.exec(migration010);
+    db.exec(migration011);
     const files = createFilesRepo(db, 'test-library');
     const resolver = new PathResolver(TESTFILES);
 
@@ -107,6 +121,13 @@ describe.runIf(canRun)('Phase 2 backend end-to-end against testfiles/', () => {
     db.exec(migration002);
     db.exec(migration003);
     db.exec(migration004);
+    db.exec(migration005);
+    db.exec(migration006);
+    db.exec(migration007);
+    db.exec(migration008);
+    db.exec(migration009);
+    db.exec(migration010);
+    db.exec(migration011);
     const files = createFilesRepo(db, 'test-library');
     const resolver = new PathResolver(TESTFILES);
 

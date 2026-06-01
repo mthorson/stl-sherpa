@@ -12,6 +12,7 @@ import { walkLibrary } from './walker';
 import { startWatcher, type LibraryWatcher } from './watcher';
 import { getAll as getPreferences } from '@main/preferences/store';
 import { scopedLogger } from '@main/logger';
+import { hashFileContent } from '@main/files/hash';
 
 const log = scopedLogger('scanner');
 
@@ -179,6 +180,15 @@ export class ScannerService extends EventEmitter {
       };
       lib.progress = finalProgress;
       this.emit('scan-complete', libraryId, finalProgress);
+
+      // Hash new/changed files for exact-duplicate detection. Upsert clears
+      // content_sha256 to NULL whenever a file's content changes, so the
+      // missing-hash list is exactly the set that needs (re)hashing — new
+      // inserts, updated files, plus any pre-migration rows being backfilled.
+      // Done after scan-complete so the grid shows up promptly; the hashes
+      // arrive with the follow-up files-changed broadcast.
+      void this.hashMissing(libraryId);
+
       log.info('scan complete', {
         libraryId,
         filesSeen: seen.length,
@@ -209,6 +219,63 @@ export class ScannerService extends EventEmitter {
         finishedAt: Date.now(),
         error: (err as Error).message
       });
+    }
+  }
+
+  /**
+   * Stream-hash every file in the library that lacks a content_sha256 and
+   * persist the digests in batches. Runs concurrently with a small worker
+   * pool so a big library doesn't serialize on disk one file at a time, but
+   * stays bounded so we never open thousands of read streams at once. Best
+   * effort: read failures leave that row's hash NULL (skipped by dup grouping).
+   */
+  private async hashMissing(libraryId: string): Promise<void> {
+    const lib = this.libs.get(libraryId);
+    if (!lib) return;
+    const pending = lib.files.listMissingContentHash();
+    if (pending.length === 0) return;
+
+    const CONCURRENCY = 4;
+    const BATCH = 200;
+    let buffer: Array<{ id: number; sha256: string }> = [];
+    let hashed = 0;
+
+    const flush = () => {
+      if (buffer.length === 0) return;
+      lib.files.setContentSha256Many(buffer);
+      hashed += buffer.length;
+      buffer = [];
+    };
+
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const item = pending[cursor++];
+        // Library may have been detached mid-hash (removed / app quitting).
+        if (!this.libs.has(libraryId)) return;
+        const abs = lib.resolver.toAbsolute(item.relPath);
+        const digest = await hashFileContent(abs);
+        if (digest) {
+          buffer.push({ id: item.id, sha256: digest });
+          if (buffer.length >= BATCH) flush();
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker())
+      );
+      flush();
+    } catch (err) {
+      flush();
+      log.warn('content hashing failed', { libraryId, err: (err as Error).message });
+    }
+
+    if (hashed > 0) {
+      log.info('content hashing complete', { libraryId, hashed, scanned: pending.length });
+      // Let the renderer pick up newly populated hashes (duplicates view).
+      this.emit('files-changed', libraryId);
     }
   }
 
