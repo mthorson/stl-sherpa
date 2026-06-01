@@ -4,6 +4,8 @@ import { frameObject } from './three/framing';
 import { extract3MFEmbeddedThumbnail } from './three/three-mf-fast-path';
 import { extractMetadata, thumbnailOnlyMetadata } from './three/metadata';
 import { computeMeshVolume, validateScene } from './three/validation';
+import { computePrintability } from './three/printability';
+import { extractFormatMetadata } from './three/format-metadata';
 import { DEFAULT_LIGHTING_STYLE, LightingRig, type LightingStyle } from './three/lighting';
 import { THUMB_WORKER_CHANNEL, THUMB_WORKER_RENDER_SIZE } from '@shared/thumb-worker-protocol';
 import type { ThumbRenderRequest, ThumbRenderResult } from '@shared/thumb-worker-protocol';
@@ -86,7 +88,18 @@ async function renderToPng(req: ThumbRenderRequest): Promise<RenderOutput> {
   // Extract metadata BEFORE disposal so the geometries/materials are still alive.
   const validation = validateScene(obj);
   const meshVolumeMm3 = computeMeshVolume(obj);
-  const metadata = extractMetadata(obj, 'gl', validation, meshVolumeMm3);
+  const printability = computePrintability(obj, validation);
+  // Format-specific provenance is parsed from the original file bytes, not the
+  // decoded scene, so it's independent of disposal ordering.
+  const format = extractFormatMetadata(arrayBuffer, req.ext);
+  const metadata = extractMetadata(
+    obj,
+    'gl',
+    validation,
+    meshVolumeMm3,
+    printability,
+    format
+  );
 
   disposeObject(obj);
   lighting.dispose();
