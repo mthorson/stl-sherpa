@@ -11,7 +11,7 @@ import {
 import { walkLibrary } from './walker';
 import { startWatcher, type LibraryWatcher } from './watcher';
 import { getAll as getPreferences } from '@main/preferences/store';
-import { scopedLogger } from '@main/logger';
+import { scopedLogger, time } from '@main/logger';
 
 const log = scopedLogger('scanner');
 
@@ -103,89 +103,8 @@ export class ScannerService extends EventEmitter {
     log.info('scan started', { libraryId });
 
     try {
-      // Two-pass scan so we can detect renames before applying inserts/deletes.
-      // Pass 1: collect everything from disk.
-      const seen: UpsertInput[] = [];
-      await walkLibrary(lib.resolver, {
-        batchSize: 500,
-        onBatch: async (batch: UpsertInput[]) => {
-          seen.push(...batch);
-          this.updateProgress(libraryId, { filesSeen: seen.length });
-        }
-      });
-
-      // Pass 2: diff against the DB to classify each entry.
-      const known = lib.files.listAllForDiff();
-      const knownByPath = new Map(known.map((k) => [k.relPath, k] as const));
-
-      const matched: UpsertInput[] = []; // present in both — needs upsert (mtime check)
-      const newPaths: UpsertInput[] = []; // in seen, not in DB
-      for (const s of seen) {
-        const k = knownByPath.get(s.relPath);
-        if (k) {
-          matched.push(s);
-          knownByPath.delete(s.relPath);
-        } else {
-          newPaths.push(s);
-        }
-      }
-      // Remaining in knownByPath = in DB, not seen → candidate stale entries.
-      const stale = [...knownByPath.values()];
-
-      // Rename detection: bucket stale entries by (size, mtime); when a new
-      // path uniquely matches an unmatched stale entry, treat as rename.
-      const staleBySig = new Map<string, typeof stale>();
-      for (const s of stale) {
-        const key = `${s.sizeBytes}:${s.mtimeMs}`;
-        const list = staleBySig.get(key);
-        if (list) list.push(s);
-        else staleBySig.set(key, [s]);
-      }
-
-      const renames: RenameEntry[] = [];
-      const trueInserts: UpsertInput[] = [];
-      for (const np of newPaths) {
-        const key = `${np.sizeBytes}:${np.mtimeMs}`;
-        const candidates = staleBySig.get(key);
-        if (candidates && candidates.length === 1) {
-          renames.push({
-            id: candidates[0].id,
-            toRelPath: np.relPath,
-            toParentDir: np.parentDir,
-            toFilename: np.filename
-          });
-          staleBySig.delete(key);
-        } else {
-          trueInserts.push(np);
-        }
-      }
-      const toDelete = [...staleBySig.values()].flat().map((s) => s.relPath);
-
-      // Apply: renames first (keeps id/thumb/tags), then upsert for
-      // (matched + new), then delete remaining stale paths.
-      const renamedCount = lib.files.applyRenames(renames);
-      const upsertResult = lib.files.upsertMany([...matched, ...trueInserts]);
-      const removedCount = lib.files.deleteByRelPaths(toDelete);
-
-      const finalProgress: ScanProgress = {
-        ...lib.progress,
-        filesSeen: seen.length,
-        inserted: upsertResult.inserted,
-        updated: upsertResult.updated,
-        renamed: renamedCount,
-        removed: removedCount,
-        state: 'watching',
-        finishedAt: Date.now()
-      };
-      lib.progress = finalProgress;
-      this.emit('scan-complete', libraryId, finalProgress);
-      log.info('scan complete', {
-        libraryId,
-        filesSeen: seen.length,
-        inserted: upsertResult.inserted,
-        updated: upsertResult.updated,
-        renamed: renamedCount,
-        removed: removedCount
+      await time(log, 'scan', () => this.indexLibrary(libraryId, lib), {
+        meta: { libraryId }
       });
 
       const prefs = getPreferences();
@@ -210,6 +129,94 @@ export class ScannerService extends EventEmitter {
         error: (err as Error).message
       });
     }
+  }
+
+  /** Walk the library, diff against the DB, and apply the changes. */
+  private async indexLibrary(libraryId: string, lib: PerLibrary): Promise<void> {
+    // Two-pass scan so we can detect renames before applying inserts/deletes.
+    // Pass 1: collect everything from disk.
+    const seen: UpsertInput[] = [];
+    await walkLibrary(lib.resolver, {
+      batchSize: 500,
+      onBatch: async (batch: UpsertInput[]) => {
+        seen.push(...batch);
+        this.updateProgress(libraryId, { filesSeen: seen.length });
+      }
+    });
+
+    // Pass 2: diff against the DB to classify each entry.
+    const known = lib.files.listAllForDiff();
+    const knownByPath = new Map(known.map((k) => [k.relPath, k] as const));
+
+    const matched: UpsertInput[] = []; // present in both — needs upsert (mtime check)
+    const newPaths: UpsertInput[] = []; // in seen, not in DB
+    for (const s of seen) {
+      const k = knownByPath.get(s.relPath);
+      if (k) {
+        matched.push(s);
+        knownByPath.delete(s.relPath);
+      } else {
+        newPaths.push(s);
+      }
+    }
+    // Remaining in knownByPath = in DB, not seen → candidate stale entries.
+    const stale = [...knownByPath.values()];
+
+    // Rename detection: bucket stale entries by (size, mtime); when a new
+    // path uniquely matches an unmatched stale entry, treat as rename.
+    const staleBySig = new Map<string, typeof stale>();
+    for (const s of stale) {
+      const key = `${s.sizeBytes}:${s.mtimeMs}`;
+      const list = staleBySig.get(key);
+      if (list) list.push(s);
+      else staleBySig.set(key, [s]);
+    }
+
+    const renames: RenameEntry[] = [];
+    const trueInserts: UpsertInput[] = [];
+    for (const np of newPaths) {
+      const key = `${np.sizeBytes}:${np.mtimeMs}`;
+      const candidates = staleBySig.get(key);
+      if (candidates && candidates.length === 1) {
+        renames.push({
+          id: candidates[0].id,
+          toRelPath: np.relPath,
+          toParentDir: np.parentDir,
+          toFilename: np.filename
+        });
+        staleBySig.delete(key);
+      } else {
+        trueInserts.push(np);
+      }
+    }
+    const toDelete = [...staleBySig.values()].flat().map((s) => s.relPath);
+
+    // Apply: renames first (keeps id/thumb/tags), then upsert for
+    // (matched + new), then delete remaining stale paths.
+    const renamedCount = lib.files.applyRenames(renames);
+    const upsertResult = lib.files.upsertMany([...matched, ...trueInserts]);
+    const removedCount = lib.files.deleteByRelPaths(toDelete);
+
+    const finalProgress: ScanProgress = {
+      ...lib.progress,
+      filesSeen: seen.length,
+      inserted: upsertResult.inserted,
+      updated: upsertResult.updated,
+      renamed: renamedCount,
+      removed: removedCount,
+      state: 'watching',
+      finishedAt: Date.now()
+    };
+    lib.progress = finalProgress;
+    this.emit('scan-complete', libraryId, finalProgress);
+    log.info('scan complete', {
+      libraryId,
+      filesSeen: seen.length,
+      inserted: upsertResult.inserted,
+      updated: upsertResult.updated,
+      renamed: renamedCount,
+      removed: removedCount
+    });
   }
 
   private scheduleChangeFlush(libraryId: string): void {
