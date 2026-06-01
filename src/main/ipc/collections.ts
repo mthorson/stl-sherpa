@@ -1,18 +1,12 @@
-import { BrowserWindow, ipcMain } from 'electron';
-import { IPC, IPC_EVENT } from '@shared/ipc-channels';
+import { ipcMain } from 'electron';
+import { IPC } from '@shared/ipc-channels';
 import type {
   CollectionRecord,
-  CollectionWithCount,
-  LibraryFilesEvent
+  CollectionWithCount
 } from '@shared/types';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { isSmartQuery } from '@shared/smart-query';
-
-function broadcast(event: LibraryFilesEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC_EVENT.libraryEvent, event);
-  }
-}
+import { broadcastLibraryEvent as broadcast } from '@main/events';
 
 export function registerCollectionsIpc(): void {
   ipcMain.handle(

@@ -10,6 +10,9 @@ import type { ThumbRenderRequest, ThumbRenderResult } from '@shared/thumb-worker
 import type { ExtractedMetadata } from '@shared/types';
 import type { IpcRenderer } from 'electron';
 import type { promises as FsPromises } from 'node:fs';
+import { scopedLogger } from './logger';
+
+const log = scopedLogger('thumb-worker');
 
 // Use window.require() rather than ES `import` for the two Node-only modules
 // because Vite's dev server can't transform them (the `electron` package's
@@ -103,6 +106,12 @@ ipcRenderer.on(THUMB_WORKER_CHANNEL.render, async (_e, req: ThumbRenderRequest) 
       jobsRendered: ++jobsRendered
     };
   } catch (err) {
+    log.error('render failed', {
+      jobId: req.jobId,
+      absPath: req.absPath,
+      ext: req.ext,
+      err: (err as Error).message ?? String(err)
+    });
     result = {
       jobId: req.jobId,
       ok: false,
@@ -114,3 +123,4 @@ ipcRenderer.on(THUMB_WORKER_CHANNEL.render, async (_e, req: ThumbRenderRequest) 
 });
 
 ipcRenderer.send(THUMB_WORKER_CHANNEL.ready);
+log.info('worker started');

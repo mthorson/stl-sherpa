@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell } from 'electron';
 import { join } from 'node:path';
 import { registerLibraryIpc } from '@main/ipc/libraries';
 import { registerFilesIpc } from '@main/ipc/files';
@@ -13,8 +13,13 @@ import {
 } from '@main/protocol/asset-protocols';
 import { thumbPool } from '@main/thumb-pool/pool';
 import { queueRunner } from '@main/thumb-pool/queue-runner';
+import { DEFAULT_LOG_LEVEL, initLogger, scopedLogger, setLogLevel } from '@main/logger';
+import { buildMenu, subscribeMenuToUndoQueue } from '@main/menu';
+import * as prefsStore from '@main/preferences/store';
+import { deliverPendingOnReady } from '@main/events';
 
 const isDev = !app.isPackaged;
+const log = scopedLogger('app');
 
 // Custom URL schemes must be registered as privileged BEFORE app is ready so
 // the renderer's CSP recognizes wh3d-thumb: / wh3d-file: as image / fetch
@@ -39,6 +44,9 @@ function createMainWindow(): BrowserWindow {
   });
 
   win.once('ready-to-show', () => win.show());
+  // Flush any library events that fired before the first window existed
+  // (e.g. integrity-check failures during openAllFromRegistry).
+  deliverPendingOnReady(win);
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -55,6 +63,16 @@ function createMainWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(() => {
+  // Init the logger with the default level FIRST, then read prefs and adjust.
+  // Reading prefs may itself want to log (corrupt file recovery), so the
+  // logger must be ready to receive those entries with the right file path.
+  initLogger(DEFAULT_LOG_LEVEL);
+  const prefs = prefsStore.getAll();
+  setLogLevel(prefs.logLevel ?? DEFAULT_LOG_LEVEL);
+  log.info('app ready', { version: app.getVersion(), platform: process.platform, dev: isDev });
+
+  Menu.setApplicationMenu(buildMenu());
+  subscribeMenuToUndoQueue();
   registerAssetProtocols();
   registerLibraryIpc();
   registerFilesIpc();
@@ -66,6 +84,10 @@ void app.whenReady().then(() => {
   // After each library opens its scanner kicks off a scan, and on completion
   // the queue runner reconciles thumbnails.
   const summaries = manager.openAllFromRegistry();
+  log.info('opened libraries from registry', {
+    total: summaries.length,
+    online: summaries.filter((s) => s.online).length
+  });
   // Also reconcile right away in case a library has no new scan to wait for
   // (already-indexed files just need their thumbnails re-checked).
   for (const s of summaries) {
@@ -85,6 +107,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  log.info('app shutting down');
   await queueRunner.shutdown();
   await thumbPool.shutdown();
   manager.shutdown();

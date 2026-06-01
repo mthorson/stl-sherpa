@@ -604,6 +604,52 @@ export function App() {
   useEffect(() => {
     return ipc.onLibraryEvent((event) => {
       const s = stateRef.current;
+
+      // Events that should show regardless of which library is selected.
+      // Integrity warnings and trash/undo toasts are app-wide signals.
+      if (event.kind === 'integrity-failed') {
+        notifications.show({
+          color: 'red',
+          title: `Library "${event.libraryName}" failed integrity check`,
+          message: `${event.error}. Recent backups are in .meshFlask/backups/. Reporting an issue? Attach a log from Help → Open Logs Folder.`,
+          autoClose: false
+        });
+        return;
+      }
+      if (event.kind === 'file-trashed') {
+        const name = event.relPath.split('/').pop() ?? event.relPath;
+        const id = `file-trashed-${event.libraryId}-${event.relPath}`;
+        notifications.show({
+          id,
+          color: 'yellow',
+          title: `Moved to Trash`,
+          message: `${name} — restore from Trash if you didn't mean to delete it.`,
+          autoClose: 8000,
+          onClick: () => {
+            void ipc.openTrash();
+            notifications.hide(id);
+          }
+        });
+        return;
+      }
+      if (event.kind === 'undo-completed') {
+        notifications.show({
+          color: 'green',
+          title: 'Undone',
+          message: event.label,
+          autoClose: 2500
+        });
+        return;
+      }
+      if (event.kind === 'undo-failed') {
+        notifications.show({
+          color: 'red',
+          title: `Could not undo: ${event.label}`,
+          message: event.error
+        });
+        return;
+      }
+
       if (event.libraryId !== s.selectedLibraryId) return;
 
       const reloadFiles = () =>

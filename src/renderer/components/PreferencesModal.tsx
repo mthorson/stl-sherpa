@@ -22,6 +22,8 @@ import {
   IconCoffee,
   IconCurrencyDollar,
   IconDatabase,
+  IconFileText,
+  IconFolderOpen,
   IconPlus,
   IconRuler,
   IconSparkles,
@@ -31,10 +33,12 @@ import {
 import { v4 as uuid } from 'uuid';
 import type {
   ExternalAppRegistration,
+  LogLevel,
   PreferencesFile,
   PrintBed,
   Unit
 } from '@shared/preferences';
+import { LOG_LEVELS } from '@shared/preferences';
 import { SUPPORTED_EXTENSIONS } from '@shared/formats';
 import {
   DEFAULT_RENDER_QUALITY,
@@ -95,6 +99,9 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
           <Tabs.Tab value="cache" leftSection={<IconDatabase size={14} />}>
             Cache
           </Tabs.Tab>
+          <Tabs.Tab value="logs" leftSection={<IconFileText size={14} />}>
+            Logs
+          </Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="apps" pt="md">
@@ -117,6 +124,9 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
         </Tabs.Panel>
         <Tabs.Panel value="cache" pt="md">
           <CacheSection libraryId={libraryId} />
+        </Tabs.Panel>
+        <Tabs.Panel value="logs" pt="md">
+          <LogsSection prefs={prefs} />
         </Tabs.Panel>
       </Tabs>
       <Divider mt="md" mb="sm" />
@@ -452,6 +462,42 @@ function RenderQualitySection({ prefs }: { prefs: PreferencesFile }) {
       <Text size="xs" c="dimmed">
         Changing quality reloads the active preview.
       </Text>
+    </Stack>
+  );
+}
+
+function LogsSection({ prefs }: { prefs: PreferencesFile }) {
+  const current: LogLevel = prefs.logLevel ?? 'info';
+  const apply = (next: string) => {
+    void savePreferences({ ...prefs, logLevel: next as LogLevel });
+  };
+  return (
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">
+        Logs from every subsystem (scanner, database, thumbnail worker, IPC)
+        land in a single rotating file. When reporting an issue, click "Open
+        Logs Folder" and attach the most recent <code>main.log</code>.
+      </Text>
+      <Group justify="space-between" align="flex-end">
+        <Stack gap={4}>
+          <Text size="sm" fw={500}>Log level</Text>
+          <Text size="xs" c="dimmed">
+            Applies immediately to file + console. Default: info.
+          </Text>
+        </Stack>
+        <SegmentedControl
+          value={current}
+          onChange={apply}
+          data={LOG_LEVELS.map((l) => ({ value: l, label: l }))}
+        />
+      </Group>
+      <Button
+        leftSection={<IconFolderOpen size={14} />}
+        variant="default"
+        onClick={() => void ipc.openLogsFolder()}
+      >
+        Open Logs Folder
+      </Button>
     </Stack>
   );
 }

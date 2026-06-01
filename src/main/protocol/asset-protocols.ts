@@ -3,6 +3,9 @@ import { existsSync, statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { thumbAbsPath } from '@main/thumb-pool/storage';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('protocol');
 
 export const SCHEME_THUMB = 'wh3d-thumb';
 export const SCHEME_FILE = 'wh3d-file';
@@ -67,7 +70,10 @@ function badRequest(message: string): Response {
 export function registerAssetProtocols(): void {
   protocol.handle(SCHEME_THUMB, async (req) => {
     const parsed = parse(req.url);
-    if (!parsed) return badRequest('Invalid wh3d-thumb URL');
+    if (!parsed) {
+      log.warn('invalid wh3d-thumb url', { url: req.url });
+      return badRequest('Invalid wh3d-thumb URL');
+    }
     const lib = getOpenLibrary(parsed.libraryId);
     if (!lib) return notFound(`Library ${parsed.libraryId} not open`);
     const abs = thumbAbsPath(lib.entry.mountPath, parsed.fileId);
@@ -77,13 +83,19 @@ export function registerAssetProtocols(): void {
 
   protocol.handle(SCHEME_FILE, async (req) => {
     const parsed = parse(req.url);
-    if (!parsed) return badRequest('Invalid wh3d-file URL');
+    if (!parsed) {
+      log.warn('invalid wh3d-file url', { url: req.url });
+      return badRequest('Invalid wh3d-file URL');
+    }
     const lib = getOpenLibrary(parsed.libraryId);
     if (!lib) return notFound(`Library ${parsed.libraryId} not open`);
     const file = lib.files.getById(parsed.fileId);
     if (!file) return notFound('File not in library');
     const abs = lib.resolver.toAbsolute(file.relPath);
-    if (!existsSync(abs) || !statSync(abs).isFile()) return notFound('File missing on disk');
+    if (!existsSync(abs) || !statSync(abs).isFile()) {
+      log.warn('file missing on disk for wh3d-file', { libraryId: parsed.libraryId, fileId: parsed.fileId, abs });
+      return notFound('File missing on disk');
+    }
     return net.fetch(pathToFileURL(abs).toString());
   });
 

@@ -7,8 +7,12 @@ import {
   DB_FILENAME,
   insertLibraryRow,
   openLibraryDatabase,
-  readLibraryRow
+  readLibraryRow,
+  runIntegrityCheck
 } from '@main/db/connection';
+import { rotateBackup } from '@main/db/backups';
+import { broadcastOrQueue } from '@main/events';
+import { undoQueue } from '@main/undo/queue';
 import { createFilesRepo, type FilesRepo } from '@main/db/repos/files';
 import { createTagsRepo, type TagsRepo } from '@main/db/repos/tags';
 import { createThumbnailsRepo, type ThumbnailsRepo } from '@main/db/repos/thumbnails';
@@ -17,7 +21,10 @@ import { createThumbErrorsRepo, type ThumbErrorsRepo } from '@main/db/repos/thum
 import { createCollectionsRepo, type CollectionsRepo } from '@main/db/repos/collections';
 import { scanner } from '@main/scanner/service';
 import { PathResolver } from '@shared/paths';
+import { scopedLogger } from '@main/logger';
 import * as registry from './registry';
+
+const log = scopedLogger('libraries');
 
 /**
  * One open library: the per-machine registry entry plus a live DB handle and
@@ -61,7 +68,29 @@ function attachLibrary(entry: registry.RegistryEntry, db: Database.Database): Op
     collections: createCollectionsRepo(db)
   };
   open.set(entry.id, handle);
+
+  // Integrity check runs against the open connection (so it sees pending WAL
+  // pages); a failure doesn't prevent attachment — users still want their
+  // sidebar entry — but it's broadcast to the renderer for a visible warning.
+  const integrity = runIntegrityCheck(db);
+  if (!integrity.ok) {
+    log.error('integrity check failed', {
+      id: entry.id,
+      mountPath: entry.mountPath,
+      err: integrity.error
+    });
+    broadcastOrQueue({
+      kind: 'integrity-failed',
+      libraryId: entry.id,
+      libraryName: entry.label,
+      error: integrity.error
+    });
+  } else {
+    log.info('integrity check ok', { id: entry.id });
+  }
+
   scanner.attach(entry.id, db, entry.mountPath);
+  log.info('library attached', { id: entry.id, name: entry.label, mountPath: entry.mountPath });
   return handle;
 }
 
@@ -71,10 +100,14 @@ function detachLibrary(id: string): void {
   if (handle) {
     try {
       handle.db.close();
-    } catch {
-      // best-effort
+    } catch (e) {
+      log.warn('library db.close failed', { id, err: (e as Error).message });
     }
     open.delete(id);
+    // Drop pending undo entries — their closures hold references to this
+    // library's repos and resolver and are useless against a closed DB.
+    undoQueue.clear(id);
+    log.info('library detached', { id });
   }
 }
 
@@ -92,13 +125,22 @@ export function openAllFromRegistry(): LibrarySummary[] {
     }
     const dbPath = join(entry.mountPath, DB_FILENAME);
     if (!existsSync(dbPath)) {
+      log.warn('library mount missing on startup', { id: entry.id, mountPath: entry.mountPath });
       summaries.push(toSummary(entry, false));
       continue;
     }
     try {
+      // Snapshot the DB before opening — better-sqlite3 takes a WAL lock on
+      // open, so doing this first guarantees a clean file copy.
+      rotateBackup(entry.mountPath);
       const db = openLibraryDatabase(entry.mountPath);
       const row = readLibraryRow(db);
       if (!row || row.id !== entry.id) {
+        log.warn('library id mismatch on registry open', {
+          id: entry.id,
+          rowId: row?.id,
+          mountPath: entry.mountPath
+        });
         db.close();
         summaries.push(toSummary(entry, false));
         continue;
@@ -106,7 +148,12 @@ export function openAllFromRegistry(): LibrarySummary[] {
       attachLibrary(entry, db);
       registry.touchLastSeen(entry.id);
       summaries.push(toSummary({ ...entry, lastSeen: Date.now() }, true));
-    } catch {
+    } catch (e) {
+      log.error('failed to open library from registry', {
+        id: entry.id,
+        mountPath: entry.mountPath,
+        err: (e as Error).message
+      });
       summaries.push(toSummary(entry, false));
     }
   }
@@ -140,6 +187,7 @@ export function addLibrary(args: {
 
   let db: Database.Database;
   try {
+    rotateBackup(mountPath);
     db = openLibraryDatabase(mountPath);
   } catch (e) {
     return { ok: false, error: `Failed to open DB: ${(e as Error).message}` };
@@ -170,6 +218,7 @@ export function addLibrary(args: {
   if (open.has(id)) detachLibrary(id);
   const entry = registry.findById(id)!;
   attachLibrary(entry, db);
+  log.info('library added', { id, name, mountPath });
 
   return { ok: true, library: toSummary(entry, true) };
 }
@@ -202,12 +251,18 @@ export function removeLibrary(args: {
   detachLibrary(args.id);
   const entry = registry.findById(args.id);
   registry.removeEntry(args.id);
+  log.info('library removed', { id: args.id, deleteCache: !!args.deleteCache });
 
   if (args.deleteCache && entry) {
     try {
       rmSync(join(entry.mountPath, DB_FILENAME), { force: true });
       rmSync(join(entry.mountPath, '.meshFlask'), { recursive: true, force: true });
     } catch (e) {
+      log.error('library cache delete failed', {
+        id: args.id,
+        mountPath: entry.mountPath,
+        err: (e as Error).message
+      });
       return {
         ok: false,
         error: `Removed registry entry but cache delete failed: ${(e as Error).message}`
