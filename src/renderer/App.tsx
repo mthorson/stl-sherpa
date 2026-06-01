@@ -3,6 +3,7 @@ import {
   ActionIcon,
   AppShell,
   Badge,
+  Button,
   Center,
   Divider,
   Group,
@@ -14,7 +15,7 @@ import {
   Text,
   Tooltip
 } from '@mantine/core';
-import { IconCoffee, IconRefresh, IconSettings, IconX } from '@tabler/icons-react';
+import { IconCoffee, IconCopy, IconRefresh, IconSettings, IconX } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import {
   Panel,
@@ -217,6 +218,7 @@ export function App() {
   const [selectedColorLabels, setSelectedColorLabels] = useState<Set<ColorLabel>>(
     () => new Set()
   );
+  const [duplicatesOnly, setDuplicatesOnly] = useState(false);
   const [selectedBedId, setSelectedBedId] = useState<string | null>(null);
   // viewScope sits alongside the folder/collection selection. 'normal' uses
   // the existing folder/collection state. 'tree' = entire current library
@@ -337,7 +339,8 @@ export function App() {
     selectedExtensions.size > 0 ||
     selectedTagIds.size > 0 ||
     minRating > 0 ||
-    selectedColorLabels.size > 0;
+    selectedColorLabels.size > 0 ||
+    duplicatesOnly;
 
   const refreshLibraries = useCallback(async () => {
     const list = await ipc.listLibraries();
@@ -383,7 +386,8 @@ export function App() {
       minRatingFilter: number,
       colorLabels: Set<ColorLabel>,
       sortSpec: SortSpec,
-      scope: 'normal' | 'tree' = 'normal'
+      scope: 'normal' | 'tree' = 'normal',
+      duplicatesOnly = false
     ) => {
       if (scope === 'tree') {
         const list = await ipc.queryFiles({
@@ -395,6 +399,7 @@ export function App() {
           tagIds: tagIds.size > 0 ? [...tagIds] : undefined,
           minRating: minRatingFilter > 0 ? minRatingFilter : undefined,
           colorLabels: colorLabels.size > 0 ? [...colorLabels] : undefined,
+          duplicatesOnly: duplicatesOnly || undefined,
           sort: sortSpec,
           limit: 2000
         });
@@ -416,7 +421,8 @@ export function App() {
         extensions.size > 0 ||
         tagIds.size > 0 ||
         minRatingFilter > 0 ||
-        colorLabels.size > 0;
+        colorLabels.size > 0 ||
+        duplicatesOnly;
       // Default-sort-by-filename in a manual collection means "use position".
       // For smart collections position doesn't apply, so fall through to the
       // normal sort path.
@@ -471,6 +477,7 @@ export function App() {
         tagIds: mergedTagIds,
         minRating: mergedMinRating,
         colorLabels: mergedColorLabels,
+        duplicatesOnly: duplicatesOnly || undefined,
         sort: explicitSort,
         limit: 2000
       };
@@ -509,6 +516,7 @@ export function App() {
     setSelectedTagIds(new Set());
     setMinRating(0);
     setSelectedColorLabels(new Set());
+    setDuplicatesOnly(false);
     setAllTags([]);
     if (!selectedLibraryId) return;
     void refreshTree(selectedLibraryId);
@@ -537,7 +545,8 @@ export function App() {
       minRating,
       selectedColorLabels,
       sort,
-      viewScope
+      viewScope,
+      duplicatesOnly
     );
     clearSelection();
     autoSelectFirstRef.current = true;
@@ -552,6 +561,7 @@ export function App() {
     selectedColorLabels,
     sort,
     viewScope,
+    duplicatesOnly,
     refreshFiles,
     clearSelection
   ]);
@@ -590,7 +600,8 @@ export function App() {
     minRating,
     selectedColorLabels,
     sort,
-    viewScope
+    viewScope,
+    duplicatesOnly
   });
   stateRef.current = {
     selectedLibraryId,
@@ -603,7 +614,8 @@ export function App() {
     minRating,
     selectedColorLabels,
     sort,
-    viewScope
+    viewScope,
+    duplicatesOnly
   };
 
   useEffect(() => {
@@ -668,7 +680,8 @@ export function App() {
           s.minRating,
           s.selectedColorLabels,
           s.sort,
-          s.viewScope
+          s.viewScope,
+          s.duplicatesOnly
         );
 
       if (event.kind === 'scan-progress') {
@@ -1288,6 +1301,31 @@ export function App() {
     });
   }, []);
 
+  // Duplicate-group bulk select: within each content-hash group, keep the
+  // first file (as ordered by the current query) and select all the rest, so
+  // the user can review then delete the redundant copies via the normal flow.
+  const selectDuplicatesToTrim = useCallback(() => {
+    const seen = new Set<string>();
+    const toSelect = new Set<number>();
+    for (const f of files) {
+      const hash = f.contentSha256;
+      if (!hash) continue;
+      if (seen.has(hash)) toSelect.add(f.id);
+      else seen.add(hash);
+    }
+    if (toSelect.size === 0) {
+      notifications.show({
+        color: 'gray',
+        title: 'No extra copies',
+        message: 'Each duplicate group already has just one file selectable to keep.'
+      });
+      return;
+    }
+    setSelectedFileIds(toSelect);
+    setPrimaryFileId([...toSelect][0] ?? null);
+    selectionAnchorRef.current = null;
+  }, [files]);
+
   const handleToggleTag = useCallback((tagId: number) => {
     setSelectedTagIds((prev) => {
       const next = new Set(prev);
@@ -1646,6 +1684,37 @@ export function App() {
               <Badge size="sm" variant="light" color="indigo">
                 {files.length} match{files.length === 1 ? '' : 'es'}
               </Badge>
+            )}
+            <div style={{ flex: 1 }} />
+            <Tooltip
+              label="Show only files whose exact content (SHA-256) matches at least one other file"
+              withinPortal
+            >
+              <Button
+                size="xs"
+                variant={duplicatesOnly ? 'filled' : 'light'}
+                color="grape"
+                leftSection={<IconCopy size={14} />}
+                onClick={() => setDuplicatesOnly((v) => !v)}
+              >
+                Duplicates
+              </Button>
+            </Tooltip>
+            {duplicatesOnly && (
+              <Tooltip
+                label="Select every redundant copy (keeps the first file in each group) — then Delete to trash them"
+                withinPortal
+              >
+                <Button
+                  size="xs"
+                  variant="light"
+                  color="red"
+                  disabled={files.length === 0}
+                  onClick={selectDuplicatesToTrim}
+                >
+                  Select extras
+                </Button>
+              </Tooltip>
             )}
           </Group>
         </Stack>
