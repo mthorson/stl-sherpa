@@ -1,6 +1,6 @@
 {
   "name": "meshFlask",
-  "version": "0.2.1",
+  "version": "0.3.0-alpha.1",
   "description": "Adobe Bridge-style browser and organizer for 3D model files",
   "main": "out/main/index.js",
   "author": "meshFlask",
