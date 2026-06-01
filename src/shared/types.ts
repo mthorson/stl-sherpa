@@ -71,6 +71,12 @@ export interface FileRecord {
   sizeBytes: number;
   mtimeMs: number;
   sha256: string | null;
+  /**
+   * SHA-256 over the file's raw bytes, computed during scan for new/changed
+   * files. Drives exact-duplicate detection. Null until the file has been
+   * hashed (or when its content could not be read).
+   */
+  contentSha256: string | null;
   metadataJson: string | null;
   createdAt: number;
   updatedAt: number;
@@ -238,6 +244,12 @@ export interface FileQueryRequest {
   /** Restrict to files carrying one of these labels. Empty/undefined = no filter. */
   colorLabels?: ColorLabel[];
   /**
+   * When true, restrict results to files that are exact-content duplicates —
+   * i.e. their `content_sha256` is shared by at least one other file in the
+   * library. Combine with the other filters/scope as usual.
+   */
+  duplicatesOnly?: boolean;
+  /**
    * Explicit ordering. When omitted, results are ordered by FTS rank (if a
    * query is set) else filename. Collection scope without a sort still uses
    * the manual `position` column.
@@ -335,6 +347,43 @@ export interface TextureInfo {
   name: string;
 }
 
+/**
+ * Rough "will this print cleanly?" heuristic. Combines watertightness, the
+ * share of unsupported overhanging surface area, and a thin-wall proxy from
+ * the bounding box. Not a slicer-grade analysis — a hint for triage.
+ */
+export interface PrintabilityReport {
+  /** 0..100; higher is better. */
+  score: number;
+  rating: 'good' | 'fair' | 'poor';
+  /** Short human-readable reasons that dragged the score down (may be empty). */
+  factors: string[];
+}
+
+/**
+ * Provenance / authoring metadata read directly from the file bytes rather than
+ * the decoded geometry. All fields optional — present only when the source file
+ * actually carries them.
+ */
+export interface FormatMetadata {
+  /** 3MF document Title metadata. */
+  title?: string;
+  /** 3MF Designer (preferred) or Author metadata. */
+  author?: string;
+  /** 3MF Description metadata. */
+  description?: string;
+  /** 3MF LicenseTerms / License metadata. */
+  license?: string;
+  /** 3MF Copyright metadata. */
+  copyright?: string;
+  /** Authoring application that wrote the file (3MF Application metadata). */
+  application?: string;
+  /** Binary STL 80-byte header text, or the leading line of an ASCII STL. */
+  stlHeader?: string;
+  /** ASCII STL `solid <name>` name. */
+  solidName?: string;
+}
+
 export interface ExtractedMetadata {
   vertexCount: number;
   triangleCount: number;
@@ -357,6 +406,12 @@ export interface ExtractedMetadata {
   /** Signed-tetrahedron mesh volume in mm³. Absent on older rows or when
    *  the mesh was too large to compute. Used by the print-cost estimator. */
   meshVolumeMm3?: number;
+  /** Heuristic printability score. Absent on older rows or when no usable
+   *  geometry was present to score. */
+  printability?: PrintabilityReport;
+  /** Format-specific provenance (3MF author/title/license, STL header).
+   *  Absent when the file carries none or the format isn't byte-parsed. */
+  format?: FormatMetadata;
 }
 
 export interface IpcApi {

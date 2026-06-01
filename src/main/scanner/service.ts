@@ -11,7 +11,8 @@ import {
 import { walkLibrary, WalkAbortedError } from './walker';
 import { startWatcher, type LibraryWatcher } from './watcher';
 import { getAll as getPreferences } from '@main/preferences/store';
-import { scopedLogger } from '@main/logger';
+import { scopedLogger, time } from '@main/logger';
+import { hashFileContent } from '@main/files/hash';
 
 const log = scopedLogger('scanner');
 
@@ -121,92 +122,15 @@ export class ScannerService extends EventEmitter {
     log.info('scan started', { libraryId });
 
     try {
-      // Two-pass scan so we can detect renames before applying inserts/deletes.
-      // Pass 1: collect everything from disk.
-      const seen: UpsertInput[] = [];
-      await walkLibrary(lib.resolver, {
-        batchSize: 500,
-        signal: abort.signal,
-        onBatch: async (batch: UpsertInput[]) => {
-          seen.push(...batch);
-          this.updateProgress(libraryId, { filesSeen: seen.length });
-        }
+      await time(log, 'scan', () => this.indexLibrary(libraryId, lib), {
+        meta: { libraryId }
       });
-
-      // Pass 2: diff against the DB to classify each entry.
-      const known = lib.files.listAllForDiff();
-      const knownByPath = new Map(known.map((k) => [k.relPath, k] as const));
-
-      const matched: UpsertInput[] = []; // present in both — needs upsert (mtime check)
-      const newPaths: UpsertInput[] = []; // in seen, not in DB
-      for (const s of seen) {
-        const k = knownByPath.get(s.relPath);
-        if (k) {
-          matched.push(s);
-          knownByPath.delete(s.relPath);
-        } else {
-          newPaths.push(s);
-        }
-      }
-      // Remaining in knownByPath = in DB, not seen → candidate stale entries.
-      const stale = [...knownByPath.values()];
-
-      // Rename detection: bucket stale entries by (size, mtime); when a new
-      // path uniquely matches an unmatched stale entry, treat as rename.
-      const staleBySig = new Map<string, typeof stale>();
-      for (const s of stale) {
-        const key = `${s.sizeBytes}:${s.mtimeMs}`;
-        const list = staleBySig.get(key);
-        if (list) list.push(s);
-        else staleBySig.set(key, [s]);
-      }
-
-      const renames: RenameEntry[] = [];
-      const trueInserts: UpsertInput[] = [];
-      for (const np of newPaths) {
-        const key = `${np.sizeBytes}:${np.mtimeMs}`;
-        const candidates = staleBySig.get(key);
-        if (candidates && candidates.length === 1) {
-          renames.push({
-            id: candidates[0].id,
-            toRelPath: np.relPath,
-            toParentDir: np.parentDir,
-            toFilename: np.filename
-          });
-          staleBySig.delete(key);
-        } else {
-          trueInserts.push(np);
-        }
-      }
-      const toDelete = [...staleBySig.values()].flat().map((s) => s.relPath);
-
-      // Apply: renames first (keeps id/thumb/tags), then upsert for
-      // (matched + new), then delete remaining stale paths.
-      const renamedCount = lib.files.applyRenames(renames);
-      const upsertResult = lib.files.upsertMany([...matched, ...trueInserts]);
-      const removedCount = lib.files.deleteByRelPaths(toDelete);
-
-      const finalProgress: ScanProgress = {
-        ...lib.progress,
-        filesSeen: seen.length,
-        inserted: upsertResult.inserted,
-        updated: upsertResult.updated,
-        renamed: renamedCount,
-        removed: removedCount,
-        state: 'watching',
-        finishedAt: Date.now()
-      };
-      lib.progress = finalProgress;
-      lib.abort = undefined;
-      this.emit('scan-complete', libraryId, finalProgress);
-      log.info('scan complete', {
-        libraryId,
-        filesSeen: seen.length,
-        inserted: upsertResult.inserted,
-        updated: upsertResult.updated,
-        renamed: renamedCount,
-        removed: removedCount
-      });
+      // Hash new/changed files for exact-duplicate detection. Upsert clears
+      // content_sha256 to NULL whenever a file's content changes, so the
+      // missing-hash list is exactly the set that needs (re)hashing. Done
+      // after scan-complete (emitted inside indexLibrary) so the grid shows
+      // up promptly; the hashes arrive with the follow-up files-changed event.
+      void this.hashMissing(libraryId);
 
       const prefs = getPreferences();
       const nasPollIntervalMs = (prefs.nasPollIntervalSec ?? 10) * 1000;
@@ -247,6 +171,153 @@ export class ScannerService extends EventEmitter {
         finishedAt: Date.now(),
         error: (err as Error).message
       });
+    }
+  }
+
+  private async indexLibrary(libraryId: string, lib: PerLibrary): Promise<void> {
+    // Two-pass scan so we can detect renames before applying inserts/deletes.
+    // Pass 1: collect everything from disk.
+    const seen: UpsertInput[] = [];
+    await walkLibrary(lib.resolver, {
+      batchSize: 500,
+      signal: lib.abort?.signal,
+      onBatch: async (batch: UpsertInput[]) => {
+        seen.push(...batch);
+        this.updateProgress(libraryId, { filesSeen: seen.length });
+      }
+    });
+
+    // Pass 2: diff against the DB to classify each entry.
+    const known = lib.files.listAllForDiff();
+    const knownByPath = new Map(known.map((k) => [k.relPath, k] as const));
+
+    const matched: UpsertInput[] = []; // present in both — needs upsert (mtime check)
+    const newPaths: UpsertInput[] = []; // in seen, not in DB
+    for (const s of seen) {
+      const k = knownByPath.get(s.relPath);
+      if (k) {
+        matched.push(s);
+        knownByPath.delete(s.relPath);
+      } else {
+        newPaths.push(s);
+      }
+    }
+    // Remaining in knownByPath = in DB, not seen → candidate stale entries.
+    const stale = [...knownByPath.values()];
+
+    // Rename detection: bucket stale entries by (size, mtime); when a new
+    // path uniquely matches an unmatched stale entry, treat as rename.
+    const staleBySig = new Map<string, typeof stale>();
+    for (const s of stale) {
+      const key = `${s.sizeBytes}:${s.mtimeMs}`;
+      const list = staleBySig.get(key);
+      if (list) list.push(s);
+      else staleBySig.set(key, [s]);
+    }
+
+    const renames: RenameEntry[] = [];
+    const trueInserts: UpsertInput[] = [];
+    for (const np of newPaths) {
+      const key = `${np.sizeBytes}:${np.mtimeMs}`;
+      const candidates = staleBySig.get(key);
+      if (candidates && candidates.length === 1) {
+        renames.push({
+          id: candidates[0].id,
+          toRelPath: np.relPath,
+          toParentDir: np.parentDir,
+          toFilename: np.filename
+        });
+        staleBySig.delete(key);
+      } else {
+        trueInserts.push(np);
+      }
+    }
+    const toDelete = [...staleBySig.values()].flat().map((s) => s.relPath);
+
+    // Apply: renames first (keeps id/thumb/tags), then upsert for
+    // (matched + new), then delete remaining stale paths.
+    const renamedCount = lib.files.applyRenames(renames);
+    const upsertResult = lib.files.upsertMany([...matched, ...trueInserts]);
+    const removedCount = lib.files.deleteByRelPaths(toDelete);
+
+    const finalProgress: ScanProgress = {
+      ...lib.progress,
+      filesSeen: seen.length,
+      inserted: upsertResult.inserted,
+      updated: upsertResult.updated,
+      renamed: renamedCount,
+      removed: removedCount,
+      state: 'watching',
+      finishedAt: Date.now()
+    };
+    lib.progress = finalProgress;
+    // Scan finished cleanly; release the abort handle before signalling done.
+    lib.abort = undefined;
+    this.emit('scan-complete', libraryId, finalProgress);
+    log.info('scan complete', {
+      libraryId,
+      filesSeen: seen.length,
+      inserted: upsertResult.inserted,
+      updated: upsertResult.updated,
+      renamed: renamedCount,
+      removed: removedCount
+    });
+  }
+
+  /**
+   * Stream-hash every file in the library that lacks a content_sha256 and
+   * persist the digests in batches. Runs concurrently with a small worker
+   * pool so a big library doesn't serialize on disk one file at a time, but
+   * stays bounded so we never open thousands of read streams at once. Best
+   * effort: read failures leave that row's hash NULL (skipped by dup grouping).
+   */
+  private async hashMissing(libraryId: string): Promise<void> {
+    const lib = this.libs.get(libraryId);
+    if (!lib) return;
+    const pending = lib.files.listMissingContentHash();
+    if (pending.length === 0) return;
+
+    const CONCURRENCY = 4;
+    const BATCH = 200;
+    let buffer: Array<{ id: number; sha256: string }> = [];
+    let hashed = 0;
+
+    const flush = () => {
+      if (buffer.length === 0) return;
+      lib.files.setContentSha256Many(buffer);
+      hashed += buffer.length;
+      buffer = [];
+    };
+
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const item = pending[cursor++];
+        // Library may have been detached mid-hash (removed / app quitting).
+        if (!this.libs.has(libraryId)) return;
+        const abs = lib.resolver.toAbsolute(item.relPath);
+        const digest = await hashFileContent(abs);
+        if (digest) {
+          buffer.push({ id: item.id, sha256: digest });
+          if (buffer.length >= BATCH) flush();
+        }
+      }
+    };
+
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, pending.length) }, () => worker())
+      );
+      flush();
+    } catch (err) {
+      flush();
+      log.warn('content hashing failed', { libraryId, err: (err as Error).message });
+    }
+
+    if (hashed > 0) {
+      log.info('content hashing complete', { libraryId, hashed, scanned: pending.length });
+      // Let the renderer pick up newly populated hashes (duplicates view).
+      this.emit('files-changed', libraryId);
     }
   }
 
