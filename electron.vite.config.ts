@@ -31,6 +31,14 @@ export default defineConfig({
   renderer: {
     root: 'src/renderer',
     plugins: [react()],
+    // Bind IPv4 loopback explicitly: Node resolves `localhost` to ::1 here,
+    // and an IPv6-only listener is unreachable from Docker's host-gateway,
+    // which the local dashboard's status checks arrive through (as
+    // host.docker.internal — allowlisted past vite's DNS-rebinding guard).
+    server: {
+      host: '127.0.0.1',
+      allowedHosts: ['host.docker.internal']
+    },
     resolve: {
       alias: {
         '@shared': resolve('src/shared'),
