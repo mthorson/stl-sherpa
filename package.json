@@ -130,7 +130,7 @@
     "@vitejs/plugin-react": "^4.3.2",
     "electron": "^32.1.2",
     "electron-builder": "^26.8.1",
-    "electron-vite": "^2.3.0",
+    "electron-vite": "^5.0.0",
     "sharp": "^0.34.5",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
