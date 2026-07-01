@@ -35,7 +35,7 @@ interface PreviewRow {
 }
 
 /**
- * Bridge-style batch rename. Shows a live preview table; only commits when
+ * Batch rename. Shows a live preview table; only commits when
  * every row is collision-free and at least one row actually changes.
  */
 export function BatchRenameModal({ opened, libraryId, files, onClose }: Props) {

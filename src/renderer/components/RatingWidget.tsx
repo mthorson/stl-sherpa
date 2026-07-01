@@ -15,7 +15,7 @@ interface Props {
 
 /**
  * Five tappable stars + clear behavior — click a star at position N to set
- * rating=N, click the current star to clear to 0. Bridge-style.
+ * rating=N, click the current star to clear to 0.
  *
  * `mixed` is for bulk mode: when the selection spans different ratings, show
  * hollow stars and a tooltip; clicking still sets the chosen rating across all.

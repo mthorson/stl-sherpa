@@ -1065,7 +1065,7 @@ export function App() {
 
   // Global keyboard shortcuts. The input-focus guard prevents number keys
   // from re-rating files while the user is typing in search, tag input, or
-  // any modal. We treat the renderer as a Bridge-style triage surface:
+  // any modal. We treat the renderer as a keyboard-driven triage surface:
   //   0..5  — set rating on the current selection
   //   Cmd/Ctrl+0     — clear color label
   //   Cmd/Ctrl+1..5  — set red/yellow/green/blue/purple

@@ -2,7 +2,7 @@
  * Star ratings and color labels — the triage primitives.
  *
  * Ratings are integers 0..5 (0 = unrated). Color labels are a small fixed
- * palette, deliberately matching Adobe Bridge so 3D-printing users from
+ * palette modeled on familiar photo-triage tools so 3D-printing users from
  * photography workflows feel at home.
  */
 

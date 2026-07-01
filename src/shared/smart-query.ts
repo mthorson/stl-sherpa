@@ -4,7 +4,7 @@
  * Intentionally a subset of `FileQueryRequest`: only filters that make sense
  * to "save" travel here. Folder scope and explicit sort live on the runtime
  * request because they're view-state, not membership rules. All rules AND
- * together — no boolean nesting in v1 (matches Bridge).
+ * together — no boolean nesting in v1.
  */
 
 import type { ColorLabel } from './ratings';
