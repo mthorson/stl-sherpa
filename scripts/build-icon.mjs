@@ -4,7 +4,7 @@
 // platform-specific .icns / .ico from a single high-res square PNG.
 //
 // Run with: npm run build:icon
-// (Also runs automatically as part of `npm run dist` if icon.png is missing.)
+// The release workflow runs this before packaging, since the PNG is gitignored.
 
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

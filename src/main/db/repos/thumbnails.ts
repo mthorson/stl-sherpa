@@ -72,31 +72,17 @@ export function createThumbnailsRepo(db: Database.Database): ThumbnailsRepo {
   const getStmt = db.prepare<[number]>(`SELECT * FROM thumbnails WHERE file_id = ?`);
   const deleteStmt = db.prepare<[number]>(`DELETE FROM thumbnails WHERE file_id = ?`);
 
-  // Three states feed this query:
-  //   1. No thumbnail and no recorded error → render
-  //   2. Thumbnail exists but is stale (mtime/version) → re-render
-  //   3. No thumbnail but a persistent error exists → SKIP unless mtime/version
-  //      moved on from when the failure was recorded
-  // Skipping (3) unless the file or renderer changed prevents the queue from
-  // hammering the same broken file forever.
+  // Queue only missing/stale thumbnails without an existing job. A current
+  // terminal error suppresses retries even if an older thumbnail remains;
+  // changing the file or renderer version makes it eligible again.
   const findNeedingStmt = db.prepare<[number, number, number]>(`
     SELECT f.id AS fileId, f.mtime_ms AS mtimeMs
     FROM files f
     LEFT JOIN thumbnails t ON t.file_id = f.id
     LEFT JOIN thumb_errors e ON e.file_id = f.id
-    WHERE
-      (
-        t.file_id IS NULL
-        AND (
-          e.file_id IS NULL
-          OR e.source_mtime_ms != f.mtime_ms
-          OR e.renderer_version < ?
-        )
-      )
-      OR (t.file_id IS NOT NULL AND (
-        t.source_mtime_ms != f.mtime_ms
-        OR t.renderer_version < ?
-      ))
+    WHERE NOT EXISTS (SELECT 1 FROM thumb_jobs j WHERE j.file_id = f.id)
+    AND (e.file_id IS NULL OR e.source_mtime_ms != f.mtime_ms OR e.renderer_version < ?)
+    AND (t.file_id IS NULL OR t.source_mtime_ms != f.mtime_ms OR t.renderer_version < ?)
     ORDER BY f.id
     LIMIT ?
   `);

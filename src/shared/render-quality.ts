@@ -41,7 +41,7 @@ export interface RenderQualityPreset {
 export const LOW_PRESET: RenderQualityPreset = {
   id: 'low',
   label: 'Low',
-  description: 'No shadows, soft reflections. Fastest — matches the previous default.',
+  description: 'No shadows, soft reflections. The fastest option.',
   shadows: { enabled: false, filter: 'basic', mapSize: 0 },
   anisotropy: 1,
   envMapRoughness: 0.04
@@ -50,7 +50,7 @@ export const LOW_PRESET: RenderQualityPreset = {
 export const MEDIUM_PRESET: RenderQualityPreset = {
   id: 'medium',
   label: 'Medium',
-  description: 'Adds hard self-shadows + sharper textures.',
+  description: 'Hard shadows and sharper textures.',
   shadows: { enabled: true, filter: 'basic', mapSize: 1024 },
   anisotropy: 4,
   envMapRoughness: 0.04
@@ -59,7 +59,7 @@ export const MEDIUM_PRESET: RenderQualityPreset = {
 export const HIGH_PRESET: RenderQualityPreset = {
   id: 'high',
   label: 'High',
-  description: 'Soft PCF shadows, crisper env-map reflections.',
+  description: 'Soft shadows and crisper reflections.',
   shadows: { enabled: true, filter: 'pcfsoft', mapSize: 2048 },
   anisotropy: 8,
   envMapRoughness: 0.02
@@ -68,7 +68,7 @@ export const HIGH_PRESET: RenderQualityPreset = {
 export const ULTRA_PRESET: RenderQualityPreset = {
   id: 'ultra',
   label: 'Ultra',
-  description: 'Max shadow + texture detail. Heaviest GPU load.',
+  description: 'Maximum detail. Hardest on your GPU.',
   shadows: { enabled: true, filter: 'pcfsoft', mapSize: 4096 },
   anisotropy: 16,
   envMapRoughness: 0.005
@@ -89,7 +89,9 @@ const BY_ID: Record<RenderQuality, RenderQualityPreset> = {
 };
 
 export function getRenderQualityPreset(id: RenderQuality): RenderQualityPreset {
-  return BY_ID[id];
+  // Fall back to Low for unknown ids — prefs are hand-editable JSON, and an
+  // unrecognized value would otherwise crash the viewer on every file.
+  return BY_ID[id] ?? LOW_PRESET;
 }
 
 export function isRenderQuality(value: unknown): value is RenderQuality {

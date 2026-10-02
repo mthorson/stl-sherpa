@@ -38,12 +38,17 @@ export interface ExternalAppRegistration {
   profiles?: SlicerProfile[];
 }
 
+export interface ExternalAppSettingsPatch {
+  argsTemplate?: string;
+  profiles?: SlicerProfile[];
+}
+
 export type Unit = 'mm' | 'in';
 
 // Duplicated rather than imported from src/main/logger.ts so this shared
 // module stays pure — main-only imports would break renderer typecheck and
 // vitest (no Electron `app` in system Node).
-export const LOG_LEVELS = ['error', 'warn', 'info', 'debug'] as const;
+export const LOG_LEVELS = ['off', 'error', 'warn', 'info', 'debug'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
 export function isLogLevel(value: unknown): value is LogLevel {
@@ -80,6 +85,13 @@ export interface PreferencesFile {
    *  immediately without a restart. */
   logLevel?: LogLevel;
 }
+
+export type PreferencesPatch = Partial<
+  Pick<
+    PreferencesFile,
+    'unit' | 'printBeds' | 'nasPollIntervalSec' | 'renderQuality' | 'printCost' | 'logLevel'
+  >
+>;
 
 export function emptyPreferences(): PreferencesFile {
   return { version: 1, externalApps: [] };

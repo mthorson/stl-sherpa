@@ -1,0 +1,10 @@
+const { spawn } = require('node:child_process');
+const path = require('node:path');
+const env = { ...process.env };
+delete env.ELECTRON_RUN_AS_NODE;
+delete env.ELECTRON_RENDERER_URL;
+const args = [path.join(__dirname, 'smoke-test.cjs')];
+if (env.MESHFLASK_SOFTWARE_RENDERING === '1') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
+const child = spawn(require('electron'), args, { env, stdio: 'inherit' });
+child.on('error', (error) => { console.error(error); process.exitCode = 1; });
+child.on('exit', (code) => { process.exitCode = code ?? 1; });

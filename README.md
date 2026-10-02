@@ -5,7 +5,7 @@
 ![meshFlask screenshot](docs/screenshot.png)
 
 A desktop browser and organizer for 3D model files.
-The current build is specifically aimed at the 3D printing community.
+Right now it's aimed squarely at 3D printing.
 
 Supported file formats common to 3D printing:
 **glb, gltf, obj, stl, ply, 3mf**.
@@ -18,19 +18,22 @@ Well then, this app is for you!
 Open one or more folders as "libraries". Each library gets its own SQLite
 database (`.meshFlask.db` at the library root) tagged with a UUID; the
 per-machine mount path lives in your user app data. Move the library
-between machines and the app reconnects by UUID — you just edit one line
+between machines and the app reconnects by UUID: you just edit one line
 in `libraries.json`.
 
 Once a library is attached you get:
 
-- A virtualized thumbnail grid (scales gracefully to libraries with
-  thousands of files) plus a dense list view
+- A virtualized thumbnail grid (stays fast even with thousands of
+  files) plus a dense list view
 - Hierarchical tags. Tag something `characters/heroes/Aragorn` and it
   shows up under all three.
 - 1–5 star ratings and 5 color labels. Keyboard shortcuts: `1`–`5` for
   stars, `Cmd+1`..`Cmd+5` for color labels, `Cmd+0` to clear.
 - Free-text notes per file with debounced auto-save
 - Manual collections, plus smart collections (saved filter queries)
+- ZIP exports include glTF/GLB external buffers and textures, retaining
+  their relative paths so extracted models reopen. Missing or unsafe
+  dependencies fail the export; an existing destination stays intact.
 - Per-file orientation override (the STLs that come out sideways stay
   fixed across sessions)
 - An interactive 3D preview with five lighting presets, four render
@@ -54,12 +57,17 @@ Built with Electron, runs on macOS, Windows, and Linux. See
 
 ## Running it locally
 
+Use Node 22 (there's a `.nvmrc`), the same version CI runs. Newer system
+Node versions may not have prebuilt `better-sqlite3` binaries and will try
+to compile it during install.
+
 ```sh
 npm install
 npm run dev
 ```
 
-`npm install` automatically rebuilds `better-sqlite3` against Electron's
+`npm install` downloads the Electron runtime before parallel tests can
+trigger competing lazy downloads, then rebuilds `better-sqlite3` against Electron's
 Node ABI (via the `postinstall` script). That's good for running the app
 and bad for the test suite, because vitest runs in system Node. If you
 want to run tests, use:
@@ -84,10 +92,11 @@ npm run dist:win        # Windows NSIS installer, x64 (cross-builds from Mac)
 npm run dist:linux      # Linux AppImage, x64
 ```
 
-Output lands in `release/`. Binaries are **unsigned** — macOS Gatekeeper
-will block the DMG on first open until you right-click → Open, and Windows
-SmartScreen will warn users. Code signing requires Apple Developer + an
-Authenticode cert respectively; both are outside what this repo sets up.
+Output lands in `release/`. macOS builds are signed and notarized when the
+Apple Developer credentials are available (the release workflow reads them
+from repo secrets; local builds need the identity in your keychain).
+Windows builds are unsigned, so SmartScreen will warn users on first
+launch; signing those needs an Authenticode cert this repo doesn't set up.
 
 The app icon is generated from `build/icon.svg` (matches the in-app logo).
 `npm run build:icon` re-renders the PNG at 1024×1024 via `sharp`;
@@ -114,13 +123,16 @@ user app data:
 
 - macOS: `~/Library/Application Support/meshFlask/`
 - Windows: `%APPDATA%/meshFlask/`
+- Linux: `~/.config/meshFlask/` (or `$XDG_CONFIG_HOME/meshFlask/`)
 
 Two files live there:
 
-- `libraries.json` is a UUID → mount-path map. If you move a library
-  to a different machine, edit this file. The app matches by UUID
-  and reconnects.
-- `preferences.json` holds your global settings — units, registered
+- `libraries.json` is a UUID → mount-path map. If a library's folder
+  moves or gets renamed, right-click the library in the sidebar and
+  pick "Locate moved folder…" (or hit the Locate button on the offline
+  screen). The app verifies the folder holds the same library by UUID
+  before reconnecting. Editing this file by hand still works too.
+- `preferences.json` holds your global settings: units, registered
   print beds, external apps, NAS poll interval, render quality, slicer
   profiles. Managed through the gear-icon preferences modal in the
   header.
@@ -129,26 +141,49 @@ Quit and relaunch reopens every library you had attached. Libraries
 remember per-machine UI state (favorites, recent folders, view
 preferences) via `localStorage` keyed on the library UUID.
 
+### Debugging
+
+Open **Preferences → Logs** to change the logging level immediately:
+`off`, `error`, `warn`, `info` (default), or `debug`. The setting persists
+across restarts and controls application logs from the main process,
+viewer, and thumbnail workers. `off` disables application file and console
+logging; Chromium or operating-system diagnostics may still appear in a
+terminal used to launch Electron.
+
+Debug traces include scanner/watcher activity, content hashing, batch
+rename/rollback, file queries, thumbnail queue refill/dispatch/completion,
+model-resource loading, preview timing, and export counts. Entries carry
+subsystem names and relevant library/file IDs. Use **Open logs folder**
+to find `logs/main.log` inside the user app-data directory. Logs rotate at
+5 MB, retaining one previous file. Debug logs can contain local paths and
+filenames; inspect them before sharing.
+
 ## Architecture
 
 Three Electron processes:
 
-1. **Main** — owns the SQLite connection (`better-sqlite3`), the
+1. **Main** owns the SQLite connection (`better-sqlite3`), the
    filesystem watcher (`chokidar` plus an initial walker), the
    thumbnail worker pool, and external-app launching. All IPC handlers
    register here.
-2. **Renderer** — the visible UI. React + Mantine, with a Three.js
+2. **Renderer** is the visible UI. React + Mantine, with a Three.js
    viewer for the live preview. Talks to main via a typed contextBridge
    defined in `src/preload/preload.ts`.
-3. **Thumbnail workers** — a small pool of hidden off-screen
-   `BrowserWindow`s, each rendering one model at a time to a PNG. Pool
-   recycles workers after a fixed job count to bound GPU/VRAM leaks.
-   These have `nodeIntegration: true` so they can read files directly.
+3. **Thumbnail workers** are a small pool of hidden `BrowserWindow`s,
+   each rendering one model at a time to a PNG. The pool recycles
+   workers after a fixed job count to bound GPU/VRAM leaks. Workers are
+   sandboxed with Node integration disabled, context isolation and web
+   security enabled, and a narrow preload bridge for render jobs.
 
 The renderer uses two custom Electron protocols: `wh3d-thumb://` for
 tile images and `wh3d-file://` for raw model bytes. Both URL shapes are
 `<library-uuid>/<file-id>`. Registered as privileged so they work
 under the strict CSP the renderer ships with.
+Workers use the same checked protocol as the live viewer. Model resources
+must resolve inside their library, including through symlinks; remote
+resources are rejected. Inline glTF data remains supported.
+Dependency inspection caps glTF JSON at 64 MiB; the GLB binary geometry
+chunk is excluded from that limit.
 
 ### Paths and portability
 
@@ -170,13 +205,13 @@ Two non-default quirks:
   the journal mode at attach time.
 - Schema versioning via SQLite's `user_version` pragma. Migrations are
   numbered `.sql` files under `src/main/db/migrations/` and applied on
-  first open. Current schema: v10.
+  first open. Current schema: v11.
 
 ### Thumbnail storage
 
-WebP sidecars at
-`<library_root>/.meshFlask/thumbs/<aa>/<bb>/<file_id>.webp` (two-level
-hash fanout — a million-file library doesn't end up with a million
+PNG sidecars at
+`<library_root>/.meshFlask/thumbs/<aa>/<bb>/<file_id>.png` (two-level
+hash fanout, so a million-file library doesn't end up with a million
 files in one directory). They're not stored as SQLite BLOBs because
 that balloons the DB file and makes backups annoying.
 
@@ -196,10 +231,10 @@ that balloons the DB file and makes backups annoying.
   batch rendering does not. If you bump quality from Low → High and
   want the existing thumb cache to match, you'd have to manually
   rebuild it from preferences → cache.
-- **Packaged builds are unsigned.** `npm run dist` produces working
-  installers, but macOS Gatekeeper and Windows SmartScreen will warn
-  users on first launch. Adding code-signing certs is left as an
-  exercise for whoever wants to ship this publicly.
+- **Windows builds are unsigned.** SmartScreen will warn users on first
+  launch. macOS signing and notarization are wired up through the
+  release workflow's secrets; an Authenticode cert for Windows is left
+  as an exercise for whoever wants to ship this publicly.
 - **No cross-library view.** Each query is scoped to one library at a
   time. (There was a brief experiment with an "All Libraries" mode; it
   turned out to be a tangle of edge cases per-library tags and
@@ -232,11 +267,48 @@ src/
 
 ```sh
 npm run test:full
+npm run test:integration   # also exercises live filesystem events
+npm run test:app           # builds and drives the real Electron app
+npm run test:packaged      # tests an already-built Linux AppImage
 ```
 
-Coverage is deliberately patchy: path resolution, the SQLite query
-layer, folder-tree construction, FTS triggers, rename detection,
-smart-collection query validation, ratings, orientation, batch-rename
-template parsing, 3MF fast-path probing. Anything involving Three.js,
-Electron windows, or the live filesystem walker against a real fixture
-gets exercised through running the app, not vitest.
+The unit and filesystem suites cover path resolution, SQLite queries,
+FTS, collections, rename/rollback, replacement files, incremental hashes,
+ratings, orientation, and thumbnail queue refill/cancellation. Large
+collection tests verify complete exports beyond 10,000 records.
+
+`test:app` requires a desktop session (or Xvfb on Linux) and an Electron
+build of `better-sqlite3`; run `npm run postinstall` first if you last ran
+plain `npm test` with a Node build. It creates a temporary profile and
+generated STL, OBJ, PLY, glTF, GLB, and 3MF samples, then checks thumbnails,
+live previews, edits, rename/undo, duplicate detection, ZIP/PDF exports,
+logging controls, and shutdown. ZIP testing extracts the archive and
+reopens its glTF without the original library. Worker tests reject remote
+resources, traversal, and escaping symlinks. The workload includes a
+1,003-file embedded-preview library, a 100,000-triangle STL, sustained
+mesh rendering, multipart 3MFs, and cancellation/restart of cache rebuilds.
+Your registered libraries
+and preferences are untouched. Set `MESHFLASK_KEEP_SMOKE=1` to retain the
+sample libraries, exports, logs, screenshot, and JSON results in the
+temporary directory printed by the test. Failed runs retain artifacts
+automatically. `MESHFLASK_SMOKE_OUTPUT=test-results/app` places retained
+artifacts in a predictable directory for CI. The unit/filesystem suites
+generate their fixtures, so a fresh checkout does not need the old private
+`manticore.3mf` files. These generated samples do not replace acceptance
+testing of actual slicer exports or physical NAS disconnects.
+
+`test:packaged` launches the built Linux AppImage using a separate XDG
+profile and a loopback-only DevTools connection. It checks packaged
+SQLite/workers, all six model formats, live glTF preview, clean exit, and
+library/annotation/preference persistence after restart. Results and a
+screenshot are saved under `test-results/packaged/`. Pass an alternative
+AppImage path with `npm run test:packaged -- /path/to/app.AppImage`.
+
+CI runs filesystem integration tests, the Linux desktop test under Xvfb,
+and AppImage acceptance. Separate macOS and Windows jobs exercise the
+desktop test. All desktop jobs retain diagnostics, including failure
+screenshots. CI sets `MESHFLASK_SOFTWARE_RENDERING=1` to use SwiftShader
+without requiring a hardware GPU; the production app keeps its normal
+graphics settings. Local simulated missing-root recovery checks preserve IDs
+and notes across a failed scan; physical SMB/NFS outages still require a
+disposable writable network library.

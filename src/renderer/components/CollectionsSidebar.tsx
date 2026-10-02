@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -7,7 +7,6 @@ import {
   Modal,
   Stack,
   Text,
-  TextInput,
   Tooltip,
   UnstyledButton,
   Button
@@ -24,6 +23,7 @@ import {
   IconTrash
 } from '@tabler/icons-react';
 import type { CollectionWithCount } from '@shared/types';
+import { NamePromptModal } from './NamePromptModal';
 
 interface Props {
   collections: CollectionWithCount[];
@@ -111,7 +111,7 @@ export function CollectionsSidebar({
         </Stack>
       )}
 
-      <NameModal
+      <NamePromptModal
         opened={modal.kind === 'create'}
         title="New collection"
         initial=""
@@ -122,7 +122,7 @@ export function CollectionsSidebar({
           close();
         }}
       />
-      <NameModal
+      <NamePromptModal
         opened={modal.kind === 'rename'}
         title="Rename collection"
         initial={modal.kind === 'rename' ? modal.collection.name : ''}
@@ -252,79 +252,6 @@ function CollectionRow({
   );
 }
 
-function NameModal({
-  opened,
-  title,
-  initial,
-  confirmLabel,
-  onCancel,
-  onConfirm
-}: {
-  opened: boolean;
-  title: string;
-  initial: string;
-  confirmLabel: string;
-  onCancel: () => void;
-  onConfirm: (name: string) => void;
-}) {
-  const [value, setValue] = useState(initial);
-
-  // Reset the draft to `initial` each time the modal opens.
-  useEffect(() => {
-    if (opened) setValue(initial);
-  }, [opened, initial]);
-
-  const trimmed = value.trim();
-  const canSubmit = trimmed.length > 0;
-
-  return (
-    <Modal
-      opened={opened}
-      onClose={() => {
-        setValue('');
-        onCancel();
-      }}
-      title={title}
-      centered
-      size="sm"
-    >
-      <Stack gap="md">
-        <TextInput
-          label="Name"
-          value={value}
-          onChange={(e) => setValue(e.currentTarget.value)}
-          data-autofocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) {
-              onConfirm(trimmed);
-              setValue('');
-            }
-          }}
-        />
-        <Group justify="flex-end" gap="sm">
-          <Button
-            variant="default"
-            onClick={() => {
-              setValue('');
-              onCancel();
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={!canSubmit}
-            onClick={() => {
-              onConfirm(trimmed);
-              setValue('');
-            }}
-          >
-            {confirmLabel}
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
-}
 
 function DeleteModal({
   opened,

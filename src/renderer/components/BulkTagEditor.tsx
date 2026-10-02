@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Autocomplete, Group, Pill, Stack, Text, Tooltip } from '@mantine/core';
 import type { TagWithCount } from '@shared/types';
 import { ipc } from '../ipc-client';
+import { hasActiveComboboxOption } from '../util/combobox';
 
 interface Props {
   libraryId: string;
@@ -40,27 +41,16 @@ export function BulkTagEditor({
   const refToken = useRef(0);
 
   // Re-aggregate whenever the selection changes or a tags-changed event lands.
+  // One batched IPC — main counts per tag across the selection in SQL.
   useEffect(() => {
     const token = ++refToken.current;
     if (fileIds.length === 0) {
       setTags([]);
       return;
     }
-    void Promise.all(fileIds.map((id) => ipc.listTagsForFile(libraryId, id))).then((results) => {
+    void ipc.listTagsForFiles(libraryId, fileIds).then((results) => {
       if (token !== refToken.current) return;
-      const counts = new Map<number, AggregatedTag>();
-      for (const fileTags of results) {
-        for (const t of fileTags) {
-          const existing = counts.get(t.id);
-          if (existing) existing.count++;
-          else counts.set(t.id, { id: t.id, name: t.name, count: 1 });
-        }
-      }
-      setTags(
-        [...counts.values()].sort((a, b) =>
-          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-        )
-      );
+      setTags(results.map((t) => ({ id: t.id, name: t.name, count: t.fileCount })));
     });
   }, [libraryId, fileIds, refreshKey]);
 
@@ -119,7 +109,7 @@ export function BulkTagEditor({
             {onSome.map((t) => (
               <Tooltip
                 key={t.id}
-                label={`On ${t.count} of ${total} — click to apply to all`}
+                label={`On ${t.count} of ${total}. Click to apply to all.`}
                 withinPortal
               >
                 <Pill
@@ -144,7 +134,10 @@ export function BulkTagEditor({
         data={suggestions}
         onOptionSubmit={(value) => void submit(value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          // With a dropdown option highlighted, Enter belongs to Mantine's
+          // onOptionSubmit; submitting the typed prefix too would create
+          // two tags.
+          if (e.key === 'Enter' && !hasActiveComboboxOption(e)) {
             e.preventDefault();
             void submit(draft);
           }

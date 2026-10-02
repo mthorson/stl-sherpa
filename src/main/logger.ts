@@ -23,8 +23,7 @@ function logsDir(): string {
 export function initLogger(initialLevel: LogLevel = DEFAULT_LOG_LEVEL): void {
   log.transports.file.resolvePathFn = () => join(logsDir(), 'main.log');
   log.transports.file.maxSize = 5 * 1024 * 1024;
-  log.transports.file.level = initialLevel;
-  log.transports.console.level = initialLevel;
+  setLogLevel(initialLevel);
   // Disable the main→renderer broadcast transport. In dev electron-log
   // defaults this to 'silly', which echoes every main-process log into every
   // renderer's console. Combined with the thumb-pool's `console-message`
@@ -40,8 +39,9 @@ export function initLogger(initialLevel: LogLevel = DEFAULT_LOG_LEVEL): void {
 }
 
 export function setLogLevel(level: LogLevel): void {
-  log.transports.file.level = level;
-  log.transports.console.level = level;
+  const threshold = level === 'off' ? false : level;
+  log.transports.file.level = threshold;
+  log.transports.console.level = threshold;
   // `ipc` (main→renderer broadcast) stays disabled — see initLogger.
 }
 

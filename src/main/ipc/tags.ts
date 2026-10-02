@@ -1,18 +1,12 @@
-import { BrowserWindow, ipcMain } from 'electron';
-import { IPC, IPC_EVENT } from '@shared/ipc-channels';
+import { ipcMain } from 'electron';
+import { IPC } from '@shared/ipc-channels';
 import type {
-  LibraryFilesEvent,
   TagRecord,
   TagTreeNode,
   TagWithCount
 } from '@shared/types';
 import { getOpenLibrary } from '@main/libraries/manager';
-
-function broadcast(event: LibraryFilesEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC_EVENT.libraryEvent, event);
-  }
-}
+import { broadcastLibraryEvent as broadcast } from '@main/events';
 
 export function registerTagsIpc(): void {
   ipcMain.handle(IPC.listTags, async (_e, libraryId: string): Promise<TagWithCount[]> => {
@@ -25,6 +19,15 @@ export function registerTagsIpc(): void {
     async (_e, libraryId: string, fileId: number): Promise<TagRecord[]> => {
       const lib = getOpenLibrary(libraryId);
       return lib ? lib.tags.listForFile(fileId) : [];
+    }
+  );
+
+  ipcMain.handle(
+    IPC.listTagsForFiles,
+    async (_e, libraryId: string, fileIds: number[]): Promise<TagWithCount[]> => {
+      const lib = getOpenLibrary(libraryId);
+      if (!lib || !Array.isArray(fileIds)) return [];
+      return lib.tags.listForFiles(fileIds.filter(Number.isInteger));
     }
   );
 

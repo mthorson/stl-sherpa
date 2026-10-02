@@ -55,7 +55,13 @@ export function TagsSidebar({
       setTree([]);
       return;
     }
-    void ipc.listTagTree(libraryId).then(setTree);
+    let cancelled = false;
+    void ipc.listTagTree(libraryId).then((next) => {
+      if (!cancelled) setTree(next);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [libraryId, tags]);
 
   return (
@@ -67,7 +73,7 @@ export function TagsSidebar({
           </Text>
           {selectedTagIds.size > 0 && (
             <Tooltip label="Clear tag filter">
-              <ActionIcon variant="subtle" size="xs" onClick={onClear}>
+              <ActionIcon variant="subtle" size="xs" onClick={onClear} aria-label="Clear tag filter">
                 <Text size="xs">×</Text>
               </ActionIcon>
             </Tooltip>
@@ -77,7 +83,7 @@ export function TagsSidebar({
       {headerless && selectedTagIds.size > 0 && (
         <Group justify="flex-end">
           <Tooltip label="Clear tag filter">
-            <ActionIcon variant="subtle" size="xs" onClick={onClear}>
+            <ActionIcon variant="subtle" size="xs" onClick={onClear} aria-label="Clear tag filter">
               <Text size="xs">×</Text>
             </ActionIcon>
           </Tooltip>

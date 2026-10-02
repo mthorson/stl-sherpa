@@ -29,6 +29,7 @@ import type {
   FileQueryRequest,
   FileRecord,
   FolderTreeNode,
+  LibraryFilesEvent,
   LibrarySummary,
   CacheProgress,
   ScanProgress,
@@ -53,8 +54,8 @@ import { FolderRowList } from './components/FavoritesSidebar';
 import { CollapsibleSection } from './components/CollapsibleSection';
 import { PrintBedFacet } from './components/PrintBedFacet';
 import { modelFitsSpecificBed } from '@shared/print-bed';
-import type { ExtractedMetadata } from '@shared/types';
 import { usePreferences } from './util/use-preferences';
+import { parseFileMeta } from './util/parse-meta';
 import { ThumbGrid, type TileClickModifiers } from './components/ThumbGrid';
 import { FileListView } from './components/FileListView';
 import { ViewSortToolbar, type ViewMode } from './components/ViewSortToolbar';
@@ -72,6 +73,8 @@ import { CompareModal } from './components/CompareModal';
 import { ipc } from './ipc-client';
 
 const SEARCH_DEBOUNCE_MS = 200;
+/** Grid queries cap at this many rows; the UI says so when the cap is hit. */
+const QUERY_LIMIT = 2000;
 const LIGHTING_STORAGE_KEY = 'wh3d:lightingStyle';
 const SORT_STORAGE_KEY = 'wh3d:sort';
 const VIEW_STORAGE_KEY = 'wh3d:viewMode';
@@ -105,15 +108,6 @@ function readStoredSort(): SortSpec {
     return isSortSpec(parsed) ? parsed : DEFAULT_SORT;
   } catch {
     return DEFAULT_SORT;
-  }
-}
-
-function parseMeta(json: string | null): ExtractedMetadata | null {
-  if (!json) return null;
-  try {
-    return JSON.parse(json) as ExtractedMetadata;
-  } catch {
-    return null;
   }
 }
 
@@ -167,6 +161,8 @@ function readStoredLightingStyle(): LightingStyle {
 export function App() {
   const [libraries, setLibraries] = useState<LibrarySummary[]>([]);
   const [selectedLibraryId, setSelectedLibraryId] = useState<string | null>(null);
+  const selectedLibraryIdRef = useRef(selectedLibraryId);
+  selectedLibraryIdRef.current = selectedLibraryId;
   const [folderTree, setFolderTree] = useState<FolderTreeNode | null>(null);
   const [selectedFolderPath, setSelectedFolderPath] = useState<string>('');
   // Collection selection is mutually exclusive with folder selection. The
@@ -208,6 +204,11 @@ export function App() {
   const [scanStatus, setScanStatus] = useState<ScanProgress | null>(null);
   const [cacheStatus, setCacheStatus] = useState<CacheProgress | null>(null);
   const [thumbVersions, setThumbVersions] = useState<Map<number, number>>(() => new Map());
+  // thumb-rendered events arrive one per file during scans/rebuilds. Applying
+  // each immediately would copy the whole version map and re-render the app
+  // thousands of times, so bumps accumulate here and flush on a short timer.
+  const pendingThumbBumpsRef = useRef<Set<number>>(new Set());
+  const thumbFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedExtensions, setSelectedExtensions] = useState<Set<SupportedExtension>>(
@@ -357,23 +358,23 @@ export function App() {
 
   const refreshTree = useCallback(async (libraryId: string) => {
     const tree = await ipc.listFolders({ libraryId });
-    setFolderTree(tree);
+    if (selectedLibraryIdRef.current === libraryId) setFolderTree(tree);
   }, []);
 
   const refreshTags = useCallback(async (libraryId: string) => {
     const tags = await ipc.listTags(libraryId);
-    setAllTags(tags);
+    if (selectedLibraryIdRef.current === libraryId) setAllTags(tags);
   }, []);
 
   const refreshCollections = useCallback(async (libraryId: string) => {
     const list = await ipc.listCollections(libraryId);
-    setCollections(list);
+    if (selectedLibraryIdRef.current === libraryId) setCollections(list);
   }, []);
 
-  // Read collections via ref so refreshFiles isn't re-created on every list
-  // refresh — that would re-trigger every effect that depends on it.
-  const collectionsRef = useRef<CollectionWithCount[]>(collections);
-  collectionsRef.current = collections;
+  // Monotonic token so a slow query that resolves after a newer one can't
+  // clobber the grid with stale results (fast nav between folders, watcher
+  // reloads racing user navigation).
+  const filesReqSeqRef = useRef(0);
 
   const refreshFiles = useCallback(
     async (
@@ -389,6 +390,7 @@ export function App() {
       scope: 'normal' | 'tree' = 'normal',
       duplicatesOnly = false
     ) => {
+      const reqToken = ++filesReqSeqRef.current;
       if (scope === 'tree') {
         const list = await ipc.queryFiles({
           libraryId,
@@ -401,21 +403,11 @@ export function App() {
           colorLabels: colorLabels.size > 0 ? [...colorLabels] : undefined,
           duplicatesOnly: duplicatesOnly || undefined,
           sort: sortSpec,
-          limit: 2000
+          limit: QUERY_LIMIT
         });
-        setFiles(list);
+        if (reqToken === filesReqSeqRef.current) setFiles(list);
         return;
       }
-      // Smart-collection merge: if the active collection is smart, its saved
-      // query rules merge with the ad-hoc filters (sidebar facets / search).
-      // Ad-hoc filters WIN — the user is narrowing the smart result.
-      const activeCol =
-        collectionId != null
-          ? collectionsRef.current.find((c) => c.id === collectionId) ?? null
-          : null;
-      const smartQuery = activeCol?.smartQuery ?? null;
-      const isSmartView = smartQuery != null;
-
       const filtersOn =
         query.trim() !== '' ||
         extensions.size > 0 ||
@@ -423,75 +415,32 @@ export function App() {
         minRatingFilter > 0 ||
         colorLabels.size > 0 ||
         duplicatesOnly;
-      // Default-sort-by-filename in a manual collection means "use position".
-      // For smart collections position doesn't apply, so fall through to the
-      // normal sort path.
-      const explicitSort =
-        sortSpec.field !== DEFAULT_SORT.field || sortSpec.direction !== DEFAULT_SORT.direction
-          ? sortSpec
-          : collectionId != null && !isSmartView
-            ? undefined
-            : sortSpec;
-
-      const mergedExtensions =
-        extensions.size > 0
-          ? [...extensions]
-          : isSmartView && smartQuery.extensions && smartQuery.extensions.length > 0
-            ? smartQuery.extensions
-            : undefined;
-      const mergedTagIds =
-        tagIds.size > 0
-          ? [...tagIds]
-          : isSmartView && smartQuery.tagIds && smartQuery.tagIds.length > 0
-            ? smartQuery.tagIds
-            : undefined;
-      const mergedMinRating =
-        minRatingFilter > 0
-          ? minRatingFilter
-          : isSmartView && smartQuery.minRating && smartQuery.minRating > 0
-            ? smartQuery.minRating
-            : undefined;
-      const mergedColorLabels =
-        colorLabels.size > 0
-          ? [...colorLabels]
-          : isSmartView && smartQuery.colorLabels && smartQuery.colorLabels.length > 0
-            ? smartQuery.colorLabels
-            : undefined;
-      const mergedSearch =
-        query.trim() !== ''
-          ? query.trim()
-          : isSmartView && smartQuery.search && smartQuery.search.trim() !== ''
-            ? smartQuery.search.trim()
-            : undefined;
-
       const req: FileQueryRequest = {
         libraryId,
-        // For smart collections we never pass collectionId to the query — its
-        // saved rules become regular filters. Manual collections still scope
-        // by collectionId so position-ordering and membership rules apply.
-        ...(collectionId != null && !isSmartView
+        ...(collectionId != null
           ? { collectionId }
-          : { parentDir, recursive: filtersOn || isSmartView }),
-        query: mergedSearch,
-        extensions: mergedExtensions,
-        tagIds: mergedTagIds,
-        minRating: mergedMinRating,
-        colorLabels: mergedColorLabels,
+          : { parentDir, recursive: filtersOn }),
+        query: query.trim() || undefined,
+        extensions: extensions.size > 0 ? [...extensions] : undefined,
+        tagIds: tagIds.size > 0 ? [...tagIds] : undefined,
+        minRating: minRatingFilter > 0 ? minRatingFilter : undefined,
+        colorLabels: colorLabels.size > 0 ? [...colorLabels] : undefined,
         duplicatesOnly: duplicatesOnly || undefined,
-        sort: explicitSort,
-        limit: 2000
+        sort: sortSpec,
+        limit: QUERY_LIMIT
       };
       const list = await ipc.queryFiles(req);
-      setFiles(list);
+      if (reqToken === filesReqSeqRef.current) setFiles(list);
     },
     []
   );
 
   const refreshScanStatus = useCallback(async (libraryId: string) => {
     const status = await ipc.getScanStatus(libraryId);
+    if (selectedLibraryIdRef.current !== libraryId) return;
     setScanStatus(status);
     const cache = await ipc.getCacheStatus(libraryId);
-    setCacheStatus(cache);
+    if (selectedLibraryIdRef.current === libraryId) setCacheStatus(cache);
   }, []);
 
   const clearSelection = useCallback(() => {
@@ -510,6 +459,7 @@ export function App() {
     clearSelection();
     setScanStatus(null);
     setThumbVersions(new Map());
+    pendingThumbBumpsRef.current = new Set();
     setSearchInput('');
     setSearchQuery('');
     setSelectedExtensions(new Set());
@@ -619,7 +569,7 @@ export function App() {
   };
 
   useEffect(() => {
-    return ipc.onLibraryEvent((event) => {
+    const handleEvent = (event: LibraryFilesEvent) => {
       const s = stateRef.current;
 
       // Events that should show regardless of which library is selected.
@@ -627,8 +577,8 @@ export function App() {
       if (event.kind === 'integrity-failed') {
         notifications.show({
           color: 'red',
-          title: `Library "${event.libraryName}" failed integrity check`,
-          message: `${event.error}. Recent backups are in .meshFlask/backups/. Reporting an issue? Attach a log from Help → Open Logs Folder.`,
+          title: `The "${event.libraryName}" library database has a problem`,
+          message: `${event.error}. Backups live in the library's .meshFlask/backups folder. If you report this, please attach a log (Help → Open Logs Folder).`,
           autoClose: false
         });
         return;
@@ -639,8 +589,8 @@ export function App() {
         notifications.show({
           id,
           color: 'yellow',
-          title: `Moved to Trash`,
-          message: `${name} — restore from Trash if you didn't mean to delete it.`,
+          title: 'Moved to Trash',
+          message: `${name} is in the Trash. Click here to open it if you change your mind.`,
           autoClose: 8000,
           onClick: () => {
             void ipc.openTrash();
@@ -726,12 +676,24 @@ export function App() {
         return;
       }
       if (event.kind === 'thumb-rendered') {
-        setThumbVersions((prev) => {
-          const next = new Map(prev);
-          next.set(event.fileId, (next.get(event.fileId) ?? 0) + 1);
-          return next;
-        });
-        if (event.fileId === s.primaryFileId) reloadFiles();
+        pendingThumbBumpsRef.current.add(event.fileId);
+        if (!thumbFlushTimerRef.current) {
+          thumbFlushTimerRef.current = setTimeout(() => {
+            thumbFlushTimerRef.current = null;
+            const ids = pendingThumbBumpsRef.current;
+            pendingThumbBumpsRef.current = new Set();
+            setThumbVersions((prev) => {
+              const next = new Map(prev);
+              for (const id of ids) next.set(id, (next.get(id) ?? 0) + 1);
+              return next;
+            });
+          }, 250);
+        }
+        if (event.fileId === s.primaryFileId || s.selectedCollectionId != null) reloadFiles();
+        return;
+      }
+      if (event.kind === 'thumb-failed') {
+        if (event.terminal) reloadFiles();
         return;
       }
       if (event.kind === 'tags-changed') {
@@ -739,7 +701,13 @@ export function App() {
         if (event.fileId === undefined || event.fileId === s.primaryFileId) {
           setTagRefreshKey((n) => n + 1);
         }
-        if (s.selectedTagIds.size > 0 || s.searchQuery.trim() !== '') reloadFiles();
+        if (
+          s.selectedTagIds.size > 0 ||
+          s.searchQuery.trim() !== '' ||
+          s.selectedCollectionId != null
+        ) {
+          reloadFiles();
+        }
         return;
       }
       if (event.kind === 'collections-changed') {
@@ -748,8 +716,25 @@ export function App() {
         if (s.selectedCollectionId != null) reloadFiles();
         return;
       }
+    };
+    const unsubscribe = ipc.onLibraryEvent(handleEvent);
+    // Events that fired before this subscription existed (startup integrity
+    // warnings) sit queued in main; pull them now that we can handle them.
+    void ipc.drainPendingEvents().then((events) => {
+      for (const ev of events) handleEvent(ev);
     });
+    return unsubscribe;
   }, [refreshTree, refreshFiles, refreshTags, refreshCollections]);
+
+  // Drop any queued thumb bumps when unmounting so the flush can't fire late.
+  useEffect(() => {
+    return () => {
+      if (thumbFlushTimerRef.current) {
+        clearTimeout(thumbFlushTimerRef.current);
+        thumbFlushTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Folder/collection/scope mutex helpers — exactly one selection mode is
   // active at a time. Picking a folder or collection drops out of tree/all-libs
@@ -774,12 +759,44 @@ export function App() {
     setSelectedCollectionId(null);
   }, []);
 
+  const { prefs } = usePreferences();
+  const printBeds = prefs?.printBeds ?? [];
+  const activeBed = selectedBedId ? printBeds.find((b) => b.id === selectedBedId) ?? null : null;
+
+  // Client-side bed filter — runs after the DB query because bed dimensions
+  // come from prefs (not the DB) and the bounding box lives in metadata_json.
+  // Selection, keyboard nav, and duplicate-select all walk THIS list, not
+  // `files`, so operations never touch files the user can't see.
+  const displayedFiles = useMemo(() => {
+    if (!activeBed) return files;
+    return files.filter((f) => {
+      const meta = parseFileMeta(f.metadataJson);
+      return modelFitsSpecificBed(meta, activeBed);
+    });
+  }, [files, activeBed]);
+
+  // A client-side filter must not leave destructive or bulk actions pointing
+  // at rows the user can no longer see.
+  useEffect(() => {
+    const visibleIds = new Set(displayedFiles.map((file) => file.id));
+    setSelectedFileIds((previous) => {
+      const next = new Set([...previous].filter((id) => visibleIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+    setPrimaryFileId((previous) =>
+      previous !== null && visibleIds.has(previous) ? previous : null
+    );
+    if (selectionAnchorRef.current !== null && !visibleIds.has(selectionAnchorRef.current)) {
+      selectionAnchorRef.current = null;
+    }
+  }, [displayedFiles]);
+
   // Single source of truth for tile-click selection logic, shared by every
-  // ThumbGrid interaction. Shift-range walks the visible `files` array between
+  // ThumbGrid interaction. Shift-range walks the visible file list between
   // the anchor and the click target (inclusive).
   const handleTileClick = useCallback(
     (fileId: number, mods: TileClickModifiers) => {
-      const ordered = files;
+      const ordered = displayedFiles;
       if (mods.shift) {
         const anchor =
           selectionAnchorRef.current != null && ordered.some((f) => f.id === selectionAnchorRef.current)
@@ -819,7 +836,7 @@ export function App() {
       setPrimaryFileId(fileId);
       selectionAnchorRef.current = fileId;
     },
-    [files, primaryFileId]
+    [displayedFiles, primaryFileId]
   );
 
   // Right-click on a tile: open the bulk context menu. Per user preference,
@@ -845,10 +862,10 @@ export function App() {
   const requestDelete = useCallback(() => {
     const ids = [...selectedFileIds];
     if (ids.length === 0) return;
-    const items = files.filter((f) => selectedFileIds.has(f.id));
+    const items = displayedFiles.filter((f) => selectedFileIds.has(f.id));
     if (items.length === 0) return;
     setDeleteConfirm({ open: true, files: items });
-  }, [selectedFileIds, files]);
+  }, [selectedFileIds, displayedFiles]);
 
   const performDelete = useCallback(async () => {
     const toDelete = deleteConfirm.files;
@@ -864,7 +881,7 @@ export function App() {
   }, [deleteConfirm.files, clearSelection]);
 
   const performDuplicate = useCallback(async () => {
-    const items = files.filter((f) => selectedFileIds.has(f.id));
+    const items = displayedFiles.filter((f) => selectedFileIds.has(f.id));
     if (items.length === 0) return;
     for (const f of items) {
       const r = await ipc.duplicateFile(f.libraryId, f.id);
@@ -873,11 +890,11 @@ export function App() {
         break;
       }
     }
-  }, [files, selectedFileIds]);
+  }, [displayedFiles, selectedFileIds]);
 
   const requestMove = useCallback(
     (toParentDir: string, fileIds: number[]) => {
-      const draggedFiles = filesAt(fileIds);
+      const draggedFiles = files.filter((f) => fileIds.includes(f.id));
       if (draggedFiles.length === 0) return;
       // Drag-onto-folder uses the folder tree of the active library, so the
       // drop only makes sense for files that live in that library. Drop the
@@ -890,12 +907,6 @@ export function App() {
       if (sameLib.every((f) => f.parentDir === toParentDir)) return;
       setMoveConfirm({ open: true, files: sameLib, toParentDir });
     },
-    // filesAt closes over `files` state via a helper defined below
-    []
-  );
-
-  const filesAt = useCallback(
-    (ids: number[]) => files.filter((f) => ids.includes(f.id)),
     [files]
   );
 
@@ -924,7 +935,7 @@ export function App() {
     notifications.show({
       color: 'green',
       title: 'Library added',
-      message: `${result.library.name} — scanning…`
+      message: `${result.library.name} added. Scanning for 3D files…`
     });
     await refreshLibraries();
     setSelectedLibraryId(result.library.id);
@@ -978,10 +989,36 @@ export function App() {
     }
   }, []);
 
+  const handleRelocate = useCallback(
+    async (id: string) => {
+      const result = await ipc.relocateLibrary(id);
+      if (!result.ok && result.canceled) return;
+      if (!result.ok) {
+        notifications.show({
+          color: 'red',
+          title: "Couldn't reconnect the library",
+          message: result.error
+        });
+        return;
+      }
+      notifications.show({
+        color: 'green',
+        title: 'Library reconnected',
+        message: `${result.library.name} is back online. Scanning for changes…`
+      });
+      await refreshLibraries();
+    },
+    [refreshLibraries]
+  );
+
   const handleRescanLibrary = useCallback(async (id: string) => {
     const result = await ipc.rescan(id);
     if (!result.ok) {
-      notifications.show({ color: 'orange', title: 'Rescan', message: result.error ?? 'failed' });
+      notifications.show({
+        color: 'orange',
+        title: "Couldn't rescan",
+        message: result.error ?? 'Something went wrong. Try again in a moment.'
+      });
     }
   }, []);
 
@@ -989,7 +1026,11 @@ export function App() {
     if (!selectedLibraryId) return;
     const result = await ipc.rescan(selectedLibraryId);
     if (!result.ok) {
-      notifications.show({ color: 'orange', title: 'Rescan', message: result.error ?? 'failed' });
+      notifications.show({
+        color: 'orange',
+        title: "Couldn't rescan",
+        message: result.error ?? 'Something went wrong. Try again in a moment.'
+      });
     }
   }, [selectedLibraryId]);
 
@@ -1085,6 +1126,9 @@ export function App() {
           target.isContentEditable
         )
           return;
+        // Focus is inside a modal/menu — these shortcuts act on the grid
+        // behind it, which the user can't see. Let the dialog have the keys.
+        if (target.closest('[role="dialog"], [role="menu"]')) return;
       }
       if (!selectedLibraryId) return;
 
@@ -1131,9 +1175,11 @@ export function App() {
         return;
       }
 
-      // Space → toggle fullscreen preview for the primary file.
+      // Space → toggle fullscreen preview for the primary file. Skip when a
+      // button has focus — preventDefault would break its space-activation.
       if (e.key === ' ' && !mod && !e.shiftKey && !e.altKey) {
         if (primaryFileId == null) return;
+        if (target && target.closest('button')) return;
         e.preventDefault();
         setFullscreenOpen((v) => !v);
         return;
@@ -1141,15 +1187,16 @@ export function App() {
 
       // Arrow nav (left/right linearly through the visible files array)
       if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-        if (files.length === 0) return;
-        const idx = primaryFileId != null ? files.findIndex((f) => f.id === primaryFileId) : -1;
+        if (displayedFiles.length === 0) return;
+        const idx =
+          primaryFileId != null ? displayedFiles.findIndex((f) => f.id === primaryFileId) : -1;
         const nextIdx =
           idx < 0
             ? 0
             : e.key === 'ArrowRight'
-              ? Math.min(files.length - 1, idx + 1)
+              ? Math.min(displayedFiles.length - 1, idx + 1)
               : Math.max(0, idx - 1);
-        const nextFile = files[nextIdx];
+        const nextFile = displayedFiles[nextIdx];
         if (!nextFile) return;
         e.preventDefault();
         handleTileClick(nextFile.id, {
@@ -1164,7 +1211,7 @@ export function App() {
   }, [
     selectedLibraryId,
     selectedFileIds,
-    files,
+    displayedFiles,
     primaryFileId,
     handleBulkSetRating,
     handleBulkSetColorLabel,
@@ -1232,7 +1279,7 @@ export function App() {
         notifications.show({
           color: 'green',
           title: 'Collection exported',
-          message: `${r.fileCount} file${r.fileCount === 1 ? '' : 's'} → ${r.path}`
+          message: `Saved ${r.fileCount} file${r.fileCount === 1 ? '' : 's'} to ${r.path}`
         });
       }
     },
@@ -1242,25 +1289,7 @@ export function App() {
   const handleExportCollectionContactSheet = useCallback(
     async (id: number) => {
       if (!selectedLibraryId) return;
-      // Fetch the collection's file ids via the regular query path — no new
-      // IPC needed and it respects smart-collection rules too.
-      const collectionFiles = await ipc.queryFiles({
-        libraryId: selectedLibraryId,
-        collectionId: id,
-        limit: 5000
-      });
-      if (collectionFiles.length === 0) {
-        notifications.show({
-          color: 'orange',
-          title: 'Contact sheet',
-          message: 'Collection is empty.'
-        });
-        return;
-      }
-      const r = await ipc.exportContactSheet(
-        selectedLibraryId,
-        collectionFiles.map((f) => f.id)
-      );
+      const r = await ipc.exportContactSheet(selectedLibraryId, { collectionId: id });
       if (!r.ok) {
         notifications.show({ color: 'red', title: 'Export failed', message: r.error });
       } else if (!r.canceled) {
@@ -1307,7 +1336,7 @@ export function App() {
   const selectDuplicatesToTrim = useCallback(() => {
     const seen = new Set<string>();
     const toSelect = new Set<number>();
-    for (const f of files) {
+    for (const f of displayedFiles) {
       const hash = f.contentSha256;
       if (!hash) continue;
       if (seen.has(hash)) toSelect.add(f.id);
@@ -1316,15 +1345,15 @@ export function App() {
     if (toSelect.size === 0) {
       notifications.show({
         color: 'gray',
-        title: 'No extra copies',
-        message: 'Each duplicate group already has just one file selectable to keep.'
+        title: 'No extras to select',
+        message: 'Every duplicate group is already down to a single copy.'
       });
       return;
     }
     setSelectedFileIds(toSelect);
     setPrimaryFileId([...toSelect][0] ?? null);
     selectionAnchorRef.current = null;
-  }, [files]);
+  }, [displayedFiles]);
 
   const handleToggleTag = useCallback((tagId: number) => {
     setSelectedTagIds((prev) => {
@@ -1348,32 +1377,18 @@ export function App() {
     [selectedLibraryId]
   );
 
-  const { prefs } = usePreferences();
-  const printBeds = prefs?.printBeds ?? [];
-  const activeBed = selectedBedId ? printBeds.find((b) => b.id === selectedBedId) ?? null : null;
-
-  // Client-side bed filter — runs after the DB query because bed dimensions
-  // come from prefs (not the DB) and the bounding box lives in metadata_json.
-  const displayedFiles = useMemo(() => {
-    if (!activeBed) return files;
-    return files.filter((f) => {
-      const meta = parseMeta(f.metadataJson);
-      return modelFitsSpecificBed(meta, activeBed);
-    });
-  }, [files, activeBed]);
-
   const selectedLibrary = libraries.find((l) => l.id === selectedLibraryId) ?? null;
   const selectedCollection =
     selectedCollectionId != null
       ? collections.find((c) => c.id === selectedCollectionId) ?? null
       : null;
   const primaryFile = useMemo(
-    () => files.find((f) => f.id === primaryFileId) ?? null,
-    [files, primaryFileId]
+    () => displayedFiles.find((f) => f.id === primaryFileId) ?? null,
+    [displayedFiles, primaryFileId]
   );
   const selectedFiles = useMemo(
-    () => files.filter((f) => selectedFileIds.has(f.id)),
-    [files, selectedFileIds]
+    () => displayedFiles.filter((f) => selectedFileIds.has(f.id)),
+    [displayedFiles, selectedFileIds]
   );
 
   const leftSidebar = (
@@ -1393,6 +1408,7 @@ export function App() {
           onAdd={handleAdd}
           onRename={handleRename}
           onReveal={handleReveal}
+          onRelocate={(id) => void handleRelocate(id)}
           onRescan={handleRescanLibrary}
           onRemove={handleRemove}
           onRemoveAndDeleteCache={handleRemoveAndDeleteCache}
@@ -1526,7 +1542,7 @@ export function App() {
       </Stack>
     </Center>
   ) : !selectedLibrary.online ? (
-    <OfflineState library={selectedLibrary} />
+    <OfflineState library={selectedLibrary} onLocate={() => void handleRelocate(selectedLibrary.id)} />
   ) : viewMode === 'list' ? (
     <Stack gap={0} h="100%">
       <Group
@@ -1542,6 +1558,7 @@ export function App() {
       >
         <Text size="xs" c="dimmed">
           {displayedFiles.length} {displayedFiles.length === 1 ? 'item' : 'items'}
+          {files.length >= QUERY_LIMIT && ` · showing the first ${QUERY_LIMIT}`}
           {selectedFileIds.size > 0 && ` · ${selectedFileIds.size} selected`}
         </Text>
         {sortToolbar}
@@ -1567,6 +1584,7 @@ export function App() {
       onTileContextMenu={handleTileContextMenu}
       headerExtras={sortToolbar}
       printBeds={printBeds}
+      countNote={files.length >= QUERY_LIMIT ? `showing the first ${QUERY_LIMIT}` : undefined}
     />
   );
 
@@ -1687,7 +1705,7 @@ export function App() {
             )}
             <div style={{ flex: 1 }} />
             <Tooltip
-              label="Show only files whose exact content (SHA-256) matches at least one other file"
+              label="Show only files that are exact copies of another file in this library"
               withinPortal
             >
               <Button
@@ -1702,7 +1720,7 @@ export function App() {
             </Tooltip>
             {duplicatesOnly && (
               <Tooltip
-                label="Select every redundant copy (keeps the first file in each group) — then Delete to trash them"
+                label="Select all but one copy in each duplicate group, so you can delete the extras"
                 withinPortal
               >
                 <Button
@@ -1815,10 +1833,15 @@ export function App() {
         allTags={allTags}
         onClose={() => setSmartCollectionEditor({ open: false, existing: null })}
         onSaved={(c) => {
-          // Refresh the collection list (handled via collections-changed event)
-          // and jump to the saved collection so the user sees their query in action.
-          setSelectedCollectionId(c.id);
-          setSelectedFolderPath('');
+          // Update the sidebar immediately; the collections-changed event can
+          // arrive after the newly saved collection is selected.
+          setCollections((previous) => {
+            const next = previous.some((item) => item.id === c.id)
+              ? previous.map((item) => (item.id === c.id ? { ...item, ...c } : item))
+              : [...previous, { ...c, fileCount: 0 }];
+            return next;
+          });
+          selectCollection(c.id);
         }}
       />
 
@@ -1906,7 +1929,7 @@ function Breadcrumbs({
   if (!library)
     return (
       <Text size="sm" c="dimmed">
-        No library
+        No library selected
       </Text>
     );
   const segments =
@@ -2033,20 +2056,24 @@ function CacheRebuildStatus({
   );
 }
 
-function OfflineState({ library }: { library: LibrarySummary }) {
+function OfflineState({ library, onLocate }: { library: LibrarySummary; onLocate: () => void }) {
   return (
     <Center h="100%">
       <Stack align="center" gap={4}>
         <Text fw={600}>{library.name} is offline</Text>
         <Text size="sm" c="dimmed">
-          The library mount path was not found:
+          meshFlask can't find this library's folder:
         </Text>
         <Text size="sm" c="dimmed" style={{ fontFamily: 'monospace' }}>
           {library.mountPath}
         </Text>
         <Text size="xs" c="dimmed" mt="md">
-          Mount the volume or update the path in your libraries.json, then restart the app.
+          If the folder lives on a drive or network share, reconnect it and restart the app.
+          Moved or renamed the folder? Point meshFlask at its new home:
         </Text>
+        <Button size="xs" variant="light" mt={4} onClick={onLocate}>
+          Locate folder…
+        </Button>
       </Stack>
     </Center>
   );

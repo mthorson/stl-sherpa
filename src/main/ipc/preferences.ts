@@ -4,7 +4,12 @@ import { basename, extname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { IPC } from '@shared/ipc-channels';
-import type { ExternalAppRegistration, PreferencesFile } from '@shared/preferences';
+import type {
+  ExternalAppRegistration,
+  ExternalAppSettingsPatch,
+  PreferencesFile,
+  PreferencesPatch
+} from '@shared/preferences';
 import * as store from '@main/preferences/store';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { rebuildThumbnailCache, purgeOrphanThumbs, cacheRebuilds } from '@main/cache/management';
@@ -12,6 +17,7 @@ import { DEFAULT_LOG_LEVEL, openLogsFolder, setLogLevel, scopedLogger } from '@m
 import { runUndo } from '@main/undo/runner';
 import { broadcastLibraryEvent } from '@main/events';
 import type { CacheProgress } from '@shared/types';
+import { assertExistingPathInsideLibrary } from '@main/files/path-safety';
 
 const log = scopedLogger('shell');
 
@@ -67,6 +73,12 @@ export function registerPreferencesIpc(): void {
     store.removeExternalApp(id);
   });
 
+  ipcMain.handle(
+    IPC.updateExternalApp,
+    async (_e, id: string, patch: ExternalAppSettingsPatch): Promise<boolean> =>
+      store.updateExternalApp(id, patch)
+  );
+
   ipcMain.handle(IPC.setDefaultExternalApp, async (_e, id: string, ext: string) => {
     store.setDefaultExternalApp(id, ext);
   });
@@ -86,6 +98,7 @@ export function registerPreferencesIpc(): void {
       if (!file) return;
       const absPath = lib.resolver.toAbsolute(file.relPath);
       if (!existsSync(absPath)) return;
+      await assertExistingPathInsideLibrary(lib.entry.mountPath, absPath);
       if (appId === null) {
         await shell.openPath(absPath);
         return;
@@ -118,13 +131,10 @@ export function registerPreferencesIpc(): void {
 
   ipcMain.handle(IPC.getPreferences, async (): Promise<PreferencesFile> => store.getAll());
 
-  ipcMain.handle(IPC.setPreferences, async (_e, prefs: PreferencesFile) => {
-    if (prefs && prefs.version === 1) {
-      store.saveAll(prefs);
-      // Apply the saved level immediately so renderer-driven changes don't
-      // require a restart to take effect on main-side logs.
-      setLogLevel(prefs.logLevel ?? DEFAULT_LOG_LEVEL);
-    }
+  ipcMain.handle(IPC.patchPreferences, async (_e, patch: PreferencesPatch) => {
+    if (!patch || typeof patch !== 'object') return;
+    const saved = store.patch(patch);
+    setLogLevel(saved.logLevel ?? DEFAULT_LOG_LEVEL);
   });
 
   ipcMain.handle(IPC.openLogsFolder, async (): Promise<void> => {
@@ -192,6 +202,7 @@ export function registerPreferencesIpc(): void {
     if (!file) return;
     const absPath = lib.resolver.toAbsolute(file.relPath);
     if (!existsSync(absPath)) return;
+    await assertExistingPathInsideLibrary(lib.entry.mountPath, absPath);
     shell.showItemInFolder(absPath);
   });
 }

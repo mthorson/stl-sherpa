@@ -12,10 +12,12 @@
     "start": "electron-vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:full": "npm rebuild better-sqlite3 && vitest run; npm run postinstall",
-    "test:integration": "npm rebuild better-sqlite3 && MESHFLASK_INTEGRATION=1 vitest run; npm run postinstall",
+    "test:app": "npm run build && node scripts/run-app-test.cjs",
+    "test:packaged": "node scripts/test-packaged.cjs",
+    "test:full": "npm rebuild better-sqlite3 && { vitest run; rc=$?; npm run postinstall || exit $?; exit $rc; }",
+    "test:integration": "npm rebuild better-sqlite3 && { MESHFLASK_INTEGRATION=1 vitest run; rc=$?; npm run postinstall || exit $?; exit $rc; }",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "node node_modules/electron/install.js && electron-rebuild -f -w better-sqlite3",
     "build:icon": "node scripts/build-icon.mjs",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
@@ -23,22 +25,11 @@
     "dist:linux": "npm run build && electron-builder --linux --publish never"
   },
   "dependencies": {
-    "@mantine/core": "^7.13.0",
-    "@mantine/hooks": "^7.13.0",
-    "@mantine/notifications": "^7.13.0",
-    "@tabler/icons-react": "^3.19.0",
-    "@tanstack/react-virtual": "^3.10.8",
-    "@types/archiver": "^7.0.0",
-    "archiver": "^7.0.1",
-    "better-sqlite3": "^11.3.0",
+    "archiver": "^8.0.0",
+    "better-sqlite3": "^12.11.1",
     "chokidar": "^3.6.0",
     "electron-log": "^5.4.4",
-    "fflate": "^0.8.3",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-resizable-panels": "^2.1.7",
-    "three": "^0.184.0",
-    "uuid": "^10.0.0"
+    "uuid": "^11.1.0"
   },
   "build": {
     "appId": "com.meshFlask.app",
@@ -55,8 +46,7 @@
       "!**/*.ts"
     ],
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**",
-      "**/node_modules/sharp/**"
+      "**/node_modules/better-sqlite3/**"
     ],
     "extraMetadata": {
       "main": "out/main/index.js"
@@ -121,17 +111,28 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
-    "@types/better-sqlite3": "^7.6.11",
+    "@mantine/core": "^7.13.0",
+    "@mantine/hooks": "^7.13.0",
+    "@mantine/notifications": "^7.13.0",
+    "@tabler/icons-react": "^3.19.0",
+    "@tanstack/react-virtual": "^3.10.8",
+    "@types/archiver": "^7.0.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.1",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.0",
     "@types/three": "^0.184.1",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^4.3.2",
-    "electron": "^32.1.2",
+    "electron": "^43.1.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^2.3.0",
+    "fflate": "^0.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-resizable-panels": "^2.1.7",
     "sharp": "^0.34.5",
+    "three": "^0.184.0",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vitest": "^2.1.2"

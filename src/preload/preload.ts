@@ -23,6 +23,7 @@ import type {
   ListFoldersRequest,
   MoveFileResult,
   PickFolderResult,
+  RelocateLibraryResult,
   RemoveLibraryRequest,
   RemoveLibraryResult,
   RenameLibraryRequest,
@@ -36,7 +37,11 @@ import type {
 import type { LightingStyle } from '@shared/lighting-types';
 import type { FileOrientation } from '@shared/orientation';
 import type { ColorLabel } from '@shared/ratings';
-import type { ExternalAppRegistration, PreferencesFile } from '@shared/preferences';
+import type {
+  ExternalAppRegistration,
+  PreferencesFile,
+  PreferencesPatch
+} from '@shared/preferences';
 import type { SmartQuery } from '@shared/smart-query';
 
 const api: IpcApi = {
@@ -50,6 +55,10 @@ const api: IpcApi = {
     ipcRenderer.invoke(IPC.renameLibrary, req) as Promise<RenameLibraryResult>,
   revealLibrary: (id: string) =>
     ipcRenderer.invoke(IPC.revealLibrary, id) as Promise<RevealLibraryResult>,
+  relocateLibrary: (id: string) =>
+    ipcRenderer.invoke(IPC.relocateLibrary, id) as Promise<RelocateLibraryResult>,
+  drainPendingEvents: () =>
+    ipcRenderer.invoke(IPC.drainPendingEvents) as Promise<LibraryFilesEvent[]>,
 
   listFolders: (req: ListFoldersRequest) =>
     ipcRenderer.invoke(IPC.listFolders, req) as Promise<FolderTreeNode | null>,
@@ -93,6 +102,8 @@ const api: IpcApi = {
     ipcRenderer.invoke(IPC.listTags, libraryId) as Promise<TagWithCount[]>,
   listTagsForFile: (libraryId: string, fileId: number) =>
     ipcRenderer.invoke(IPC.listTagsForFile, libraryId, fileId) as Promise<TagRecord[]>,
+  listTagsForFiles: (libraryId: string, fileIds: number[]) =>
+    ipcRenderer.invoke(IPC.listTagsForFiles, libraryId, fileIds) as Promise<TagWithCount[]>,
   addTagToFile: (libraryId: string, fileId: number, tagName: string) =>
     ipcRenderer.invoke(IPC.addTagToFile, libraryId, fileId, tagName) as Promise<TagRecord>,
   removeTagFromFile: (libraryId: string, fileId: number, tagId: number) =>
@@ -133,6 +144,8 @@ const api: IpcApi = {
     ipcRenderer.invoke(IPC.listExternalApps) as Promise<ExternalAppRegistration[]>,
   addExternalApp: (extensions: string[]) =>
     ipcRenderer.invoke(IPC.addExternalApp, extensions) as Promise<ExternalAppRegistration | null>,
+  updateExternalApp: (id, patch) =>
+    ipcRenderer.invoke(IPC.updateExternalApp, id, patch) as Promise<boolean>,
   removeExternalApp: (id: string) =>
     ipcRenderer.invoke(IPC.removeExternalApp, id) as Promise<void>,
   setDefaultExternalApp: (id: string, ext: string) =>
@@ -165,8 +178,8 @@ const api: IpcApi = {
   purgeOrphanThumbs: (libraryId: string) =>
     ipcRenderer.invoke(IPC.purgeOrphanThumbs, libraryId) as Promise<{ removed: number }>,
   getPreferences: () => ipcRenderer.invoke(IPC.getPreferences) as Promise<PreferencesFile>,
-  setPreferences: (prefs: PreferencesFile) =>
-    ipcRenderer.invoke(IPC.setPreferences, prefs) as Promise<void>,
+  patchPreferences: (patch: PreferencesPatch) =>
+    ipcRenderer.invoke(IPC.patchPreferences, patch) as Promise<void>,
 
   listTagTree: (libraryId: string) =>
     ipcRenderer.invoke(IPC.listTagTree, libraryId) as Promise<TagTreeNode[]>,
@@ -184,8 +197,8 @@ const api: IpcApi = {
 
   exportCollectionZip: (libraryId: string, collectionId: number) =>
     ipcRenderer.invoke(IPC.exportCollectionZip, libraryId, collectionId) as Promise<ExportResult>,
-  exportContactSheet: (libraryId: string, fileIds: number[]) =>
-    ipcRenderer.invoke(IPC.exportContactSheet, libraryId, fileIds) as Promise<ExportResult>,
+  exportContactSheet: (libraryId: string, selection: number[] | { collectionId: number }) =>
+    ipcRenderer.invoke(IPC.exportContactSheet, libraryId, selection) as Promise<ExportResult>,
 
   openLogsFolder: () => ipcRenderer.invoke(IPC.openLogsFolder) as Promise<void>,
   openTrash: () => ipcRenderer.invoke(IPC.openTrash) as Promise<void>,

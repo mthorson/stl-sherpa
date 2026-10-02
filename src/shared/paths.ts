@@ -66,12 +66,15 @@ export class PathResolver {
     const compareAbs = this.isWindowsMount ? absPosix.toLowerCase() : absPosix;
     const compareRoot = this.isWindowsMount ? root.toLowerCase() : root;
 
-    if (compareAbs !== compareRoot && !compareAbs.startsWith(compareRoot + '/')) {
+    // Drive-root (`Z:\`) and filesystem-root (`/`) mounts already end in a
+    // separator, so don't append another when building the containment prefix.
+    const prefix = compareRoot.endsWith('/') ? compareRoot : compareRoot + '/';
+    if (compareAbs !== compareRoot && !compareAbs.startsWith(prefix)) {
       throw new Error(`Path ${absPath} is not inside library mount ${this.mountPath}`);
     }
 
     if (compareAbs === compareRoot) return '';
-    return absPosix.slice(root.length + 1);
+    return absPosix.slice(prefix.length);
   }
 
   /**
@@ -100,10 +103,12 @@ export class PathResolver {
         throw new Error(`toAbsolute: path escapes library root: ${relPath}`);
       }
     }
+    // Root mounts (`Z:\`, `/`) already end in a separator.
+    const rootHasSep = this.mountPath.endsWith('/') || this.mountPath.endsWith('\\');
     if (this.isWindowsMount) {
-      return this.mountPath + '\\' + cleanRel.replace(/\//g, '\\');
+      return this.mountPath + (rootHasSep ? '' : '\\') + cleanRel.replace(/\//g, '\\');
     }
-    return this.mountPath + '/' + cleanRel;
+    return this.mountPath + (rootHasSep ? '' : '/') + cleanRel;
   }
 
   getMountPath(): string {

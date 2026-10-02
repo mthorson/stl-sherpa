@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActionIcon,
   Button,
@@ -7,7 +7,6 @@ import {
   Modal,
   Stack,
   Text,
-  TextInput,
   Tooltip,
   UnstyledButton
 } from '@mantine/core';
@@ -16,12 +15,14 @@ import {
   IconDotsVertical,
   IconFolderOpen,
   IconFolderPlus,
+  IconFolderSearch,
   IconPencil,
   IconRefresh,
   IconTrash,
   IconTrashX
 } from '@tabler/icons-react';
 import type { LibrarySummary } from '@shared/types';
+import { NamePromptModal } from './NamePromptModal';
 
 interface Props {
   libraries: LibrarySummary[];
@@ -30,6 +31,7 @@ interface Props {
   onAdd: () => void;
   onRename: (id: string, name: string) => void;
   onReveal: (id: string) => void;
+  onRelocate: (id: string) => void;
   onRescan: (id: string) => void;
   onRemove: (id: string) => void;
   onRemoveAndDeleteCache: (id: string) => void;
@@ -47,6 +49,7 @@ export function LibrarySidebar({
   onAdd,
   onRename,
   onReveal,
+  onRelocate,
   onRescan,
   onRemove,
   onRemoveAndDeleteCache
@@ -81,6 +84,7 @@ export function LibrarySidebar({
               onSelect={() => onSelect(lib.id)}
               onRename={() => setModal({ kind: 'rename', library: lib })}
               onReveal={() => onReveal(lib.id)}
+              onRelocate={() => onRelocate(lib.id)}
               onRescan={() => onRescan(lib.id)}
               onRemove={() => onRemove(lib.id)}
               onRemoveAndDeleteCache={() => setModal({ kind: 'delete-cache', library: lib })}
@@ -89,9 +93,12 @@ export function LibrarySidebar({
         </Stack>
       )}
 
-      <RenameModal
+      <NamePromptModal
         opened={modal.kind === 'rename'}
-        library={modal.kind === 'rename' ? modal.library : null}
+        title="Rename library"
+        confirmLabel="Rename"
+        initial={modal.kind === 'rename' ? modal.library.name : ''}
+        requireChange
         onCancel={closeModal}
         onConfirm={(name) => {
           if (modal.kind === 'rename') onRename(modal.library.id, name);
@@ -118,6 +125,7 @@ function LibraryRow({
   onSelect,
   onRename,
   onReveal,
+  onRelocate,
   onRescan,
   onRemove,
   onRemoveAndDeleteCache
@@ -127,6 +135,7 @@ function LibraryRow({
   onSelect: () => void;
   onRename: () => void;
   onReveal: () => void;
+  onRelocate: () => void;
   onRescan: () => void;
   onRemove: () => void;
   onRemoveAndDeleteCache: () => void;
@@ -205,6 +214,9 @@ function LibraryRow({
           >
             Rescan
           </Menu.Item>
+          <Menu.Item leftSection={<IconFolderSearch size={14} />} onClick={onRelocate}>
+            Locate moved folder…
+          </Menu.Item>
           <Menu.Divider />
           <Menu.Item leftSection={<IconTrash size={14} />} onClick={onRemove}>
             Remove from app
@@ -222,50 +234,6 @@ function LibraryRow({
   );
 }
 
-function RenameModal({
-  opened,
-  library,
-  onCancel,
-  onConfirm
-}: {
-  opened: boolean;
-  library: LibrarySummary | null;
-  onCancel: () => void;
-  onConfirm: (name: string) => void;
-}) {
-  const [value, setValue] = useState('');
-
-  useEffect(() => {
-    if (opened && library) setValue(library.name);
-  }, [opened, library]);
-
-  const trimmed = value.trim();
-  const canSubmit = trimmed.length > 0 && trimmed !== library?.name;
-
-  return (
-    <Modal opened={opened} onClose={onCancel} title="Rename library" centered size="sm">
-      <Stack gap="md">
-        <TextInput
-          label="Name"
-          value={value}
-          onChange={(e) => setValue(e.currentTarget.value)}
-          data-autofocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) onConfirm(trimmed);
-          }}
-        />
-        <Group justify="flex-end" gap="sm">
-          <Button variant="default" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button disabled={!canSubmit} onClick={() => onConfirm(trimmed)}>
-            Rename
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
-}
 
 function DeleteCacheModal({
   opened,

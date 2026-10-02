@@ -51,7 +51,44 @@ import {
   type PrintCostPreferences
 } from '@shared/print-cost';
 import { ipc } from '../ipc-client';
-import { savePreferences, usePreferences } from '../util/use-preferences';
+import { savePreferencePatch, usePreferences } from '../util/use-preferences';
+import { useRef } from 'react';
+
+/**
+ * Debounced pref writes for type-into inputs. Saving on every keystroke
+ * makes each usePreferences subscriber refetch, and a slow reload landing
+ * between keystrokes visibly reverts the input while the user types.
+ * The pending value flushes on unmount so tab switches don't lose edits.
+ */
+function useDebouncedPrefSave<T>(save: (value: T) => void, delayMs = 400): (value: T) => void {
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<{ value: T } | null>(null);
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const pending = pendingRef.current;
+      pendingRef.current = null;
+      if (pending) saveRef.current(pending.value);
+    };
+  }, []);
+
+  return useCallback(
+    (value: T) => {
+      pendingRef.current = { value };
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        const pending = pendingRef.current;
+        pendingRef.current = null;
+        if (pending) saveRef.current(pending.value);
+      }, delayMs);
+    },
+    [delayMs]
+  );
+}
 
 interface Props {
   opened: boolean;
@@ -62,8 +99,8 @@ interface Props {
 
 /**
  * Tabbed settings modal. Each tab is a self-contained section that reads
- * from the live prefs and writes back via savePreferences (which broadcasts
- * to every usePreferences subscriber).
+ * from the live prefs and writes atomic patches, which broadcast to every
+ * usePreferences subscriber.
  */
 export function PreferencesModal({ opened, onClose, libraryId }: Props) {
   const { prefs, reload } = usePreferences();
@@ -152,9 +189,9 @@ function UnitsSection({ prefs }: { prefs: PreferencesFile }) {
   const apply = useCallback(
     async (next: Unit) => {
       setUnit(next);
-      await savePreferences({ ...prefs, unit: next });
+      await savePreferencePatch({ unit: next });
     },
-    [prefs]
+    []
   );
   return (
     <Stack gap="sm">
@@ -179,9 +216,9 @@ function PrintBedsSection({ prefs }: { prefs: PreferencesFile }) {
 
   const save = useCallback(
     async (next: PrintBed[]) => {
-      await savePreferences({ ...prefs, printBeds: next });
+      await savePreferencePatch({ printBeds: next });
     },
-    [prefs]
+    []
   );
 
   const add = async () => {
@@ -204,8 +241,8 @@ function PrintBedsSection({ prefs }: { prefs: PreferencesFile }) {
   return (
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
-        Registered printer beds (mm). Models whose bounding box doesn't fit any bed get a warning
-        badge in the grid.
+        Your printer beds, in millimeters. Models too big for every bed get an OVERSIZE badge in
+        the grid.
       </Text>
       <Stack gap={4}>
         {beds.length === 0 && (
@@ -288,18 +325,19 @@ function PrintBedsSection({ prefs }: { prefs: PreferencesFile }) {
 }
 
 function PrintCostsSection({ prefs }: { prefs: PreferencesFile }) {
-  const current: PrintCostPreferences = prefs.printCost ?? DEFAULT_PRINT_COST_PREFS;
-  const [draft, setDraft] = useState<PrintCostPreferences>(current);
-
-  // Re-seed when the upstream prefs change (e.g. opened the modal after an
-  // edit elsewhere).
-  useEffect(() => {
-    setDraft(prefs.printCost ?? DEFAULT_PRINT_COST_PREFS);
-  }, [prefs.printCost]);
+  // Seeded on mount only (the tab remounts each time it's opened, per
+  // keepMounted={false}); re-seeding on prefs changes clobbered in-progress
+  // typing whenever a background reload landed between keystrokes.
+  const [draft, setDraft] = useState<PrintCostPreferences>(
+    prefs.printCost ?? DEFAULT_PRINT_COST_PREFS
+  );
+  const scheduleSave = useDebouncedPrefSave<PrintCostPreferences>((next) => {
+    void savePreferencePatch({ printCost: next });
+  });
 
   const apply = (next: PrintCostPreferences) => {
     setDraft(next);
-    void savePreferences({ ...prefs, printCost: next });
+    scheduleSave(next);
   };
 
   return (
@@ -403,16 +441,19 @@ function PrintCostsSection({ prefs }: { prefs: PreferencesFile }) {
 
 function WatcherSection({ prefs }: { prefs: PreferencesFile }) {
   const [interval, setIntervalValue] = useState<number>(prefs.nasPollIntervalSec ?? 10);
-  const apply = async (next: number) => {
+  const scheduleSave = useDebouncedPrefSave<number>((next) => {
+    void savePreferencePatch({ nasPollIntervalSec: next });
+  });
+  const apply = (next: number) => {
     setIntervalValue(next);
-    await savePreferences({ ...prefs, nasPollIntervalSec: next });
+    scheduleSave(next);
   };
   return (
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
-        How often to poll NAS-mounted libraries for filesystem changes (chokidar polling).
-        fsevents/inotify don't fire on network mounts so we fall back to polling. Trade-off:
-        shorter intervals = more network traffic.
+        How often meshFlask checks libraries on network drives for new or changed files. Network
+        drives don't send change notifications, so we check on a timer. Shorter intervals pick up
+        changes faster but use more network traffic.
       </Text>
       <NumberInput
         label="NAS poll interval (seconds)"
@@ -423,7 +464,7 @@ function WatcherSection({ prefs }: { prefs: PreferencesFile }) {
         step={1}
       />
       <Text size="xs" c="dimmed">
-        Changes take effect when a library re-attaches (restart the app).
+        Takes effect the next time you start the app.
       </Text>
     </Stack>
   );
@@ -433,7 +474,7 @@ function RenderQualitySection({ prefs }: { prefs: PreferencesFile }) {
   const current: RenderQuality = prefs.renderQuality ?? DEFAULT_RENDER_QUALITY;
   const preset = getRenderQualityPreset(current);
   const apply = (next: string) => {
-    void savePreferences({ ...prefs, renderQuality: next as RenderQuality });
+    void savePreferencePatch({ renderQuality: next as RenderQuality });
   };
   return (
     <Stack gap="md">
@@ -469,7 +510,7 @@ function RenderQualitySection({ prefs }: { prefs: PreferencesFile }) {
 function LogsSection({ prefs }: { prefs: PreferencesFile }) {
   const current: LogLevel = prefs.logLevel ?? 'info';
   const apply = (next: string) => {
-    void savePreferences({ ...prefs, logLevel: next as LogLevel });
+    void savePreferencePatch({ logLevel: next as LogLevel });
   };
   return (
     <Stack gap="md">
@@ -482,7 +523,7 @@ function LogsSection({ prefs }: { prefs: PreferencesFile }) {
         <Stack gap={4}>
           <Text size="sm" fw={500}>Log level</Text>
           <Text size="xs" c="dimmed">
-            Applies immediately to file + console. Default: info.
+            Applies immediately to file + console. Debug adds detailed diagnostics; off disables app logging. Default: info.
           </Text>
         </Stack>
         <SegmentedControl
@@ -527,8 +568,8 @@ function CacheSection({ libraryId }: { libraryId: string | null }) {
       const result = await ipc.purgeOrphanThumbs(libraryId);
       notifications.show({
         color: 'green',
-        title: 'Orphan sidecars purged',
-        message: `Removed ${result.removed} file${result.removed === 1 ? '' : 's'}.`
+        title: 'Cleanup finished',
+        message: `Removed ${result.removed} leftover thumbnail file${result.removed === 1 ? '' : 's'}.`
       });
     } finally {
       setBusy(null);
@@ -558,12 +599,12 @@ function CacheSection({ libraryId }: { libraryId: string | null }) {
           disabled={!libraryId}
           onClick={() => void purge()}
         >
-          Purge orphan sidecars
+          Clean up leftover thumbnails
         </Button>
       </Group>
       <Text size="xs" c="dimmed">
-        Rebuild wipes the `thumbnails` table and re-queues every file. Purge removes sidecar
-        PNG/WebP files whose `file_id` no longer exists.
+        Rebuild clears every cached thumbnail and renders them all again. Clean up deletes
+        thumbnail files that no longer belong to anything in the library.
       </Text>
     </Stack>
   );
@@ -613,7 +654,7 @@ function ExternalAppsSection({
           </Text>
         )}
         {apps.map((app) => (
-          <AppRow key={app.id} app={app} prefs={prefs} onChanged={onChanged} />
+          <AppRow key={app.id} app={app} onChanged={onChanged} />
         ))}
       </Stack>
       <Divider my="xs" />
@@ -643,32 +684,31 @@ function ExternalAppsSection({
 
 function AppRow({
   app,
-  prefs,
   onChanged
 }: {
   app: ExternalAppRegistration;
-  prefs: PreferencesFile;
   onChanged: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [argsTemplate, setArgsTemplate] = useState(app.argsTemplate ?? '');
+  const [profileDraft, setProfileDraft] = useState<{ name: string; path: string } | null>(null);
 
-  const updateApp = async (patch: Partial<ExternalAppRegistration>) => {
-    const next: PreferencesFile = {
-      ...prefs,
-      externalApps: prefs.externalApps.map((a) => (a.id === app.id ? { ...a, ...patch } : a))
-    };
-    await savePreferences(next);
+  const updateApp = async (
+    patch: Partial<Pick<ExternalAppRegistration, 'argsTemplate' | 'profiles'>>
+  ) => {
+    await ipc.updateExternalApp(app.id, patch);
     await onChanged();
   };
 
+  // Inline form instead of window.prompt — Electron renderers don't implement
+  // prompt(), so the old flow threw and never added anything.
   const addProfile = async () => {
-    // For now, just prompt for a path via TextInput-driven add (no file picker
-    // dialog inside the modal). User pastes path; common with slicer .ini files.
-    const path = window.prompt('Profile file path');
+    if (!profileDraft) return;
+    const path = profileDraft.path.trim();
     if (!path) return;
-    const name = window.prompt('Profile name', path.split('/').pop() ?? 'Profile') ?? 'Profile';
+    const name = profileDraft.name.trim() || path.split('/').pop() || 'Profile';
     const next = [...(app.profiles ?? []), { id: uuid(), name, path }];
+    setProfileDraft(null);
     await updateApp({ profiles: next });
   };
 
@@ -707,14 +747,22 @@ function AppRow({
             )}
           </Group>
         </Stack>
-        <Tooltip label="Default for its extensions">
+        <Tooltip
+          label={
+            app.extensions.length === 0
+              ? 'Register specific extensions to make this app a default'
+              : 'Default for its extensions'
+          }
+        >
           <Switch
             size="xs"
             checked={app.isDefault}
+            disabled={app.extensions.length === 0}
             onChange={async (e) => {
-              const ext = app.extensions[0];
-              if (!ext) return;
-              await ipc.setDefaultExternalApp(e.currentTarget.checked ? app.id : '', ext);
+              const id = e.currentTarget.checked ? app.id : '';
+              for (const ext of app.extensions) {
+                await ipc.setDefaultExternalApp(id, ext);
+              }
               await onChanged();
             }}
           />
@@ -772,10 +820,46 @@ function AppRow({
                 {p.name}
               </Badge>
             ))}
-            <Button size="compact-xs" variant="subtle" onClick={() => void addProfile()}>
-              + profile
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              onClick={() => setProfileDraft((d) => (d ? null : { name: '', path: '' }))}
+            >
+              {profileDraft ? 'Cancel' : '+ profile'}
             </Button>
           </Group>
+          {profileDraft && (
+            <Group gap={6} align="flex-end" wrap="nowrap">
+              <TextInput
+                size="xs"
+                label="Profile file path"
+                placeholder="/path/to/profile.ini"
+                style={{ flex: 1 }}
+                value={profileDraft.path}
+                onChange={(e) => {
+                  const path = e.currentTarget.value;
+                  setProfileDraft((d) => (d ? { ...d, path } : d));
+                }}
+              />
+              <TextInput
+                size="xs"
+                label="Name"
+                placeholder="Defaults to the file name"
+                value={profileDraft.name}
+                onChange={(e) => {
+                  const name = e.currentTarget.value;
+                  setProfileDraft((d) => (d ? { ...d, name } : d));
+                }}
+              />
+              <Button
+                size="compact-xs"
+                disabled={profileDraft.path.trim() === ''}
+                onClick={() => void addProfile()}
+              >
+                Add
+              </Button>
+            </Group>
+          )}
         </Stack>
       )}
     </Stack>

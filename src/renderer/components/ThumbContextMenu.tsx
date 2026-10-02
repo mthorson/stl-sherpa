@@ -42,6 +42,8 @@ import { UP_AXIS_OPTIONS, type FileOrientation, type UpAxis } from '@shared/orie
 import { COLOR_LABELS, COLOR_LABEL_HEX } from '@shared/ratings';
 import type { ExternalAppRegistration } from '@shared/preferences';
 import { ipc } from '../ipc-client';
+import { hasActiveComboboxOption } from '../util/combobox';
+import { NamePromptModal } from './NamePromptModal';
 
 interface Props {
   opened: boolean;
@@ -166,15 +168,10 @@ export function ThumbContextMenu(props: Props) {
   useEffect(() => {
     if (modal.kind !== 'remove-tag') return;
     const token = ++refToken.current;
-    void Promise.all(fileIds.map((id) => ipc.listTagsForFile(libraryId, id))).then((results) => {
+    // One batched IPC instead of a round trip per selected file.
+    void ipc.listTagsForFiles(libraryId, fileIds).then((results) => {
       if (token !== refToken.current) return;
-      const dedup = new Map<number, TagRecord>();
-      for (const row of results) for (const t of row) dedup.set(t.id, t);
-      setAppliedTags(
-        [...dedup.values()].sort((a, b) =>
-          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-        )
-      );
+      setAppliedTags(results.map((t) => ({ id: t.id, name: t.name, parentId: t.parentId })));
     });
   }, [modal.kind, fileIds, libraryId]);
 
@@ -244,7 +241,7 @@ export function ThumbContextMenu(props: Props) {
                       leftSection={<IconAppWindow size={14} />}
                       onClick={() => openWith(app.id, null)}
                     >
-                      (no profile)
+                      No profile
                     </Menu.Item>
                     {profiles.map((p) => (
                       <Menu.Item
@@ -506,8 +503,12 @@ export function ThumbContextMenu(props: Props) {
         }}
       />
 
-      <NewCollectionModal
+      <NamePromptModal
         opened={modal.kind === 'new-collection'}
+        title="New collection"
+        confirmLabel="Create & add"
+        placeholder="e.g. Tuesday batch"
+        confirmIcon={<IconFolderPlus size={14} />}
         onCancel={close}
         onConfirm={async (name) => {
           const created = await onCreateCollection(name);
@@ -518,7 +519,6 @@ export function ThumbContextMenu(props: Props) {
     </>
   );
 }
-
 function AddTagModal({
   opened,
   allTags,
@@ -553,7 +553,12 @@ function AddTagModal({
           data={suggestions}
           data-autofocus
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) void onConfirm(trimmed);
+            // With a dropdown option highlighted, Enter picks the option
+            // (filling the input); a second Enter confirms. Submitting the
+            // typed prefix here would tag with the wrong name.
+            if (e.key === 'Enter' && canSubmit && !hasActiveComboboxOption(e)) {
+              void onConfirm(trimmed);
+            }
           }}
         />
         <Group justify="flex-end" gap="sm">
@@ -614,55 +619,6 @@ function RemoveTagModal({
         <Group justify="flex-end" gap="sm">
           <Button variant="default" onClick={onCancel}>
             Close
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
-  );
-}
-
-function NewCollectionModal({
-  opened,
-  onCancel,
-  onConfirm
-}: {
-  opened: boolean;
-  onCancel: () => void;
-  onConfirm: (name: string) => Promise<void> | void;
-}) {
-  const [value, setValue] = useState('');
-
-  useEffect(() => {
-    if (opened) setValue('');
-  }, [opened]);
-
-  const trimmed = value.trim();
-  const canSubmit = trimmed.length > 0;
-
-  return (
-    <Modal opened={opened} onClose={onCancel} title="New collection" centered size="sm">
-      <Stack gap="md">
-        <Autocomplete
-          label="Name"
-          placeholder="e.g. Tuesday batch"
-          value={value}
-          onChange={setValue}
-          data={[]}
-          data-autofocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) void onConfirm(trimmed);
-          }}
-        />
-        <Group justify="flex-end" gap="sm">
-          <Button variant="default" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button
-            leftSection={<IconFolderPlus size={14} />}
-            disabled={!canSubmit}
-            onClick={() => void onConfirm(trimmed)}
-          >
-            Create &amp; add
           </Button>
         </Group>
       </Stack>

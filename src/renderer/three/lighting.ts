@@ -43,7 +43,9 @@ export class LightingRig {
     this.group.name = 'wh3d-lighting';
     scene.add(this.group);
     this.pmrem = new THREE.PMREMGenerator(renderer);
-    this.pmrem.compileEquirectangularShader();
+    // fromScene renders a cubemap, so precompile the cubemap variant (the
+    // equirectangular one is for fromEquirectangular and never runs here).
+    this.pmrem.compileCubemapShader();
     // ACES Filmic globally — preset intensities below are tuned against it.
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.0;
@@ -68,10 +70,11 @@ export class LightingRig {
     this.scene.background = null;
 
     if (def.environmentIntensity > 0) {
-      this.envMap = this.pmrem.fromScene(
-        new RoomEnvironment(),
-        this.quality.envMapRoughness
-      ).texture;
+      const room = new RoomEnvironment();
+      this.envMap = this.pmrem.fromScene(room, this.quality.envMapRoughness).texture;
+      // The bake copies what it needs into the PMREM texture; the room scene's
+      // own geometries/materials must be freed or they pile up per bake.
+      room.dispose();
       this.scene.environment = this.envMap;
       this.scene.environmentIntensity = def.environmentIntensity;
     }
@@ -145,8 +148,11 @@ export class LightingRig {
     cam.far = distance + sphere.radius * 3;
     cam.updateProjectionMatrix();
 
-    // Bias scales with model size to avoid acne on tiny models / over-darkening on huge ones.
-    light.shadow.bias = -0.0005 * Math.max(1, sphere.radius);
+    // bias is in normalized depth units and the ortho camera's depth range
+    // already scales with the model, so it stays constant — scaling it too
+    // visibly detaches shadows on large models. normalBias is in world units
+    // and does need to track model size.
+    light.shadow.bias = -0.0005;
     light.shadow.normalBias = 0.02 * Math.max(1, sphere.radius);
     light.shadow.needsUpdate = true;
   }
@@ -160,7 +166,12 @@ export class LightingRig {
 
   private clear(): void {
     while (this.group.children.length > 0) {
-      this.group.remove(this.group.children[0]);
+      const child = this.group.children[0];
+      this.group.remove(child);
+      // Lights own GPU state (the shadow caster holds a shadow-map render
+      // target); dropping them without dispose() leaks VRAM on every preset
+      // switch.
+      if ((child as THREE.Light).isLight) (child as THREE.Light).dispose();
     }
     if (this.envMap) {
       this.envMap.dispose();

@@ -73,10 +73,12 @@ export async function walkLibrary(
     let entries: Dirent[];
     try {
       entries = await readdir(absDir, { withFileTypes: true, encoding: 'utf8' });
-    } catch {
-      // Permission denied or transient FS error — skip this subtree silently.
-      return;
+    } catch (err) {
+      // Treat an unreadable subtree as a failed scan. Returning an empty
+      // subtree would make the diff delete every indexed row beneath it.
+      throw new Error(`Failed to read directory ${absDir}: ${(err as Error).message}`);
     }
+    throwIfAborted();
 
     for (const entry of entries) {
       const absChild = join(absDir, entry.name);
@@ -87,21 +89,23 @@ export async function walkLibrary(
         continue;
       }
 
-      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      // Symlinks can escape the library root and make previews or file
+      // operations read unrelated files. Libraries index regular files only.
+      if (!entry.isFile()) continue;
 
       const ext = extensionOf(entry.name);
       if (!isSupportedExtension(ext)) continue;
 
-      // Symlinks need an explicit stat to get size/mtime of the target.
       let sizeBytes: number;
       let mtimeMs: number;
       try {
-        const s = entry.isSymbolicLink() ? await stat(absChild) : await stat(absChild);
+        const s = await stat(absChild);
         sizeBytes = s.size;
         mtimeMs = Math.floor(s.mtimeMs);
       } catch {
         continue;
       }
+      throwIfAborted();
 
       const relPath = resolver.toRelative(absChild);
       const slash = relPath.lastIndexOf('/');
@@ -127,6 +131,8 @@ export async function walkLibrary(
   };
 
   await visit(root);
+  throwIfAborted();
   await flush();
+  throwIfAborted();
   return { totalSeen, seenRelPaths };
 }

@@ -15,6 +15,7 @@ pnpm-debug.log*
 
 # Test / coverage
 coverage/
+test-results/
 *.lcov
 .nyc_output/
 
@@ -32,6 +33,7 @@ coverage/
 # Editor / IDE
 .vscode/
 .idea/
+.claude/settings.local.json
 *.swp
 *.swo
 *~

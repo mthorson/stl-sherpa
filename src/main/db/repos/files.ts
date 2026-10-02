@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { CameraState, FileRecord, FolderRecord, FileQueryRequest } from '@shared/types';
 import { isCameraState } from '@shared/types';
@@ -7,7 +8,7 @@ import {
   type FileOrientation
 } from '@shared/orientation';
 import { clampRating, isColorLabel, type ColorLabel } from '@shared/ratings';
-import type { SortSpec } from '@shared/sort';
+import { isSortSpec, type SortSpec } from '@shared/sort';
 
 interface FileRow {
   id: number;
@@ -65,7 +66,6 @@ function rowToRecord(libraryId: string, row: FileRow): FileRecord {
     ext: row.ext,
     sizeBytes: row.size_bytes,
     mtimeMs: row.mtime_ms,
-    sha256: row.sha256,
     contentSha256: row.content_sha256,
     metadataJson: row.metadata_json,
     createdAt: row.created_at,
@@ -95,8 +95,10 @@ export type UpsertOutcome = 'inserted' | 'updated' | 'unchanged';
 export interface DiffEntry {
   id: number;
   relPath: string;
+  ext: string;
   sizeBytes: number;
   mtimeMs: number;
+  contentSha256: string | null;
 }
 
 export interface RenameEntry {
@@ -127,19 +129,24 @@ export interface FilesRepo {
   query(req: Omit<FileQueryRequest, 'libraryId'>): FileRecord[];
   /** Update extracted metadata for a file. Triggers FTS row rebuild. */
   setMetadata(fileId: number, metadataJson: string): void;
-  /** Set sha256 (computed lazily during thumbnail render). */
-  setSha256(fileId: number, sha256: string): void;
   /**
    * Persist content-hash digests for many files in one transaction. Used by
    * the scanner after hashing new/changed files for exact-dup detection.
    */
-  setContentSha256Many(entries: Array<{ id: number; sha256: string }>): void;
+  setContentSha256Many(
+    entries: Array<{ id: number; sha256: string; sizeBytes: number; mtimeMs: number }>
+  ): number;
   /**
    * Files whose `content_sha256` is still NULL — new rows the scanner just
    * inserted, plus any pre-migration rows that predate the column. Returns a
    * lightweight {id, relPath} projection the scanner uses to hash them.
    */
-  listMissingContentHash(): Array<{ id: number; relPath: string }>;
+  listMissingContentHash(): Array<{
+    id: number;
+    relPath: string;
+    sizeBytes: number;
+    mtimeMs: number;
+  }>;
   /**
    * Persist or clear a per-file orientation override. `null` clears the
    * override so the file falls back to its format default.
@@ -217,14 +224,13 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
   const setMetadataStmt = db.prepare<[string, number]>(
     `UPDATE files SET metadata_json = ? WHERE id = ?`
   );
-  const setSha256Stmt = db.prepare<[string, number]>(
-    `UPDATE files SET sha256 = ? WHERE id = ?`
-  );
-  const setContentSha256Stmt = db.prepare<[string, number]>(
-    `UPDATE files SET content_sha256 = ? WHERE id = ?`
+  const setContentSha256Stmt = db.prepare<[string, number, number, number]>(
+    `UPDATE files SET content_sha256 = ?
+     WHERE id = ? AND size_bytes = ? AND mtime_ms = ? AND content_sha256 IS NULL`
   );
   const listMissingContentHashStmt = db.prepare(
-    `SELECT id, rel_path AS relPath FROM files WHERE content_sha256 IS NULL`
+    `SELECT id, rel_path AS relPath, size_bytes AS sizeBytes, mtime_ms AS mtimeMs
+     FROM files WHERE content_sha256 IS NULL`
   );
   const setOrientationStmt = db.prepare<[string | null, number]>(
     `UPDATE files SET orientation_json = ? WHERE id = ?`
@@ -243,7 +249,10 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
   );
 
   const listAllForDiffStmt = db.prepare(
-    `SELECT id, rel_path AS relPath, size_bytes AS sizeBytes, mtime_ms AS mtimeMs FROM files`
+    `SELECT id, rel_path AS relPath, ext,
+      size_bytes AS sizeBytes, mtime_ms AS mtimeMs,
+      content_sha256 AS contentSha256
+     FROM files`
   );
   const renameStmt = db.prepare<[string, string, string, number, number]>(`
     UPDATE files
@@ -330,6 +339,10 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
       let total = 0;
       const tx = db.transaction((items: RenameEntry[]) => {
         const now = Date.now();
+        const temporary = db.prepare('UPDATE files SET rel_path = ? WHERE id = ?');
+        const prefix = `.mf-rename-${randomUUID()}/`;
+        // Vacate every source before assigning final paths, including cycles.
+        for (const r of items) temporary.run(`${prefix}${r.id}`, r.id);
         for (const r of items) {
           total += renameStmt.run(r.toRelPath, r.toParentDir, r.toFilename, now, r.id).changes;
         }
@@ -345,7 +358,10 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
     query(req) {
       const where: string[] = [];
       const params: unknown[] = [];
-      const limit = req.limit ?? 1000;
+      // Interpolated into the SQL below, so coerce to a sane integer no
+      // matter what arrives over IPC.
+      const limit = Math.min(Math.max(Math.floor(Number(req.limit)) || 1000, 1), 10_000);
+      const offset = Number.isSafeInteger(req.offset) && req.offset! > 0 ? req.offset! : 0;
 
       // FTS clause sits in its own join when present so an empty/no query
       // doesn't pay for the virtual table lookup.
@@ -367,8 +383,11 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
 
       if (req.parentDir != null) {
         if (req.recursive) {
-          where.push(`(files.parent_dir = ? OR files.parent_dir LIKE ?)`);
-          params.push(req.parentDir, req.parentDir === '' ? '%' : `${req.parentDir}/%`);
+          if (req.parentDir !== '') {
+            // instr is a literal, case-sensitive prefix comparison.
+            where.push(`(files.parent_dir = ? OR instr(files.parent_dir, ?) = 1)`);
+            params.push(req.parentDir, `${req.parentDir}/`);
+          }
         } else {
           where.push(`files.parent_dir = ?`);
           params.push(req.parentDir);
@@ -432,7 +451,10 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
       //   3. manual collection position
       //   4. FTS rank if a query is set
       //   5. filename fallback
-      const orderSql = req.sort
+      // isSortSpec guards the IPC boundary: an unknown field would make
+      // buildOrderClause return undefined, injecting literal "undefined"
+      // into the SQL.
+      const orderSql = isSortSpec(req.sort)
         ? buildOrderClause(req.sort)
         : req.duplicatesOnly
           ? ' ORDER BY files.content_sha256, files.filename COLLATE NOCASE'
@@ -449,8 +471,8 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
         FROM files${ftsJoin}${collectionJoin}
         LEFT JOIN thumbnails ON thumbnails.file_id = files.id
         LEFT JOIN thumb_errors ON thumb_errors.file_id = files.id
-        ${whereSql}${orderSql}
-        LIMIT ${limit}
+        ${whereSql}${orderSql}, files.id
+        LIMIT ${limit} OFFSET ${offset}
       `;
       const rows = db.prepare(sql).all(...params) as FileRow[];
       return rows.map((r) => rowToRecord(libraryId, r));
@@ -460,20 +482,25 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
       setMetadataStmt.run(metadataJson, fileId);
     },
 
-    setSha256(fileId, sha256) {
-      setSha256Stmt.run(sha256, fileId);
-    },
-
     setContentSha256Many(entries) {
-      if (entries.length === 0) return;
-      const tx = db.transaction((rows: Array<{ id: number; sha256: string }>) => {
-        for (const r of rows) setContentSha256Stmt.run(r.sha256, r.id);
+      if (entries.length === 0) return 0;
+      const tx = db.transaction((rows: typeof entries) => {
+        let changed = 0;
+        for (const r of rows) {
+          changed += setContentSha256Stmt.run(r.sha256, r.id, r.sizeBytes, r.mtimeMs).changes;
+        }
+        return changed;
       });
-      tx(entries);
+      return tx(entries);
     },
 
     listMissingContentHash() {
-      return listMissingContentHashStmt.all() as Array<{ id: number; relPath: string }>;
+      return listMissingContentHashStmt.all() as Array<{
+        id: number;
+        relPath: string;
+        sizeBytes: number;
+        mtimeMs: number;
+      }>;
     },
 
     setOrientation(fileId, orientation) {
@@ -526,8 +553,7 @@ export function createFilesRepo(db: Database.Database, libraryId: string): Files
  */
 function buildOrderClause(sort: SortSpec): string {
   const dir = sort.direction === 'desc' ? 'DESC' : 'ASC';
-  // SQLite handles NULLS LAST/FIRST natively only as `NULLS LAST` syntax.
-  const nulls = sort.direction === 'desc' ? 'NULLS LAST' : 'NULLS LAST';
+  const nulls = 'NULLS LAST';
   const tiebreak = ` , files.filename COLLATE NOCASE`;
   switch (sort.field) {
     case 'filename':
@@ -546,13 +572,14 @@ function buildOrderClause(sort: SortSpec): string {
       return ` ORDER BY JSON_EXTRACT(files.metadata_json, '$.triangleCount') ${dir} ${nulls}${tiebreak}`;
     case 'bboxVolume':
       // size = [x, y, z]; volume = product. SQLite JSON_EXTRACT returns the JSON
-      // array elements as numbers when addressed individually.
+      // array elements as numbers when addressed individually. Files without
+      // metadata must stay NULL (not 0) so NULLS LAST actually applies.
       return (
-        ` ORDER BY (` +
+        ` ORDER BY (CASE WHEN files.metadata_json IS NULL THEN NULL ELSE (` +
         `COALESCE(JSON_EXTRACT(files.metadata_json, '$.boundingBox.size[0]'), 0) * ` +
         `COALESCE(JSON_EXTRACT(files.metadata_json, '$.boundingBox.size[1]'), 0) * ` +
         `COALESCE(JSON_EXTRACT(files.metadata_json, '$.boundingBox.size[2]'), 0)` +
-        `) ${dir} ${nulls}${tiebreak}`
+        `) END) ${dir} ${nulls}${tiebreak}`
       );
   }
 }

@@ -42,6 +42,12 @@ describe('renderTemplate', () => {
     const ctx = { filename: 'README', ext: '', mtimeMs: 0 };
     expect(renderTemplate(ctx, 0, 1, '{name}{ext}')).toBe('README');
   });
+
+  it('strips uppercase on-disk extensions ({name} must not double-extension)', () => {
+    const ctx = { filename: 'HERO.STL', ext: 'stl', mtimeMs: 0 };
+    expect(renderTemplate(ctx, 0, 1, '{name}{ext}')).toBe('HERO.stl');
+    expect(renderTemplate(ctx, 0, 1, '{name}')).toBe('HERO');
+  });
 });
 
 describe('isInvalidFilename', () => {
@@ -67,5 +73,20 @@ describe('isInvalidFilename', () => {
     expect(isInvalidFilename('hero.stl')).toBe(false);
     expect(isInvalidFilename('print_001.3mf')).toBe(false);
     expect(isInvalidFilename('Some File With Spaces.obj')).toBe(false);
+  });
+
+  it('flags Windows reserved device names, with or without extension', () => {
+    expect(isInvalidFilename('con')).toBe(true);
+    expect(isInvalidFilename('CON.stl')).toBe(true);
+    expect(isInvalidFilename('aux.3mf')).toBe(true);
+    expect(isInvalidFilename('COM1')).toBe(true);
+    expect(isInvalidFilename('lpt9.obj')).toBe(true);
+    expect(isInvalidFilename('console.stl')).toBe(false);
+    expect(isInvalidFilename('com10.stl')).toBe(false);
+  });
+
+  it('flags trailing dots and spaces (Windows strips them silently)', () => {
+    expect(isInvalidFilename('hero.stl.')).toBe(true);
+    expect(isInvalidFilename('hero.stl ')).toBe(true);
   });
 });

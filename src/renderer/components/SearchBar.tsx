@@ -35,7 +35,12 @@ export function SearchBar({
         leftSection={<IconSearch size={14} />}
         rightSection={
           query ? (
-            <ActionIcon variant="subtle" size="sm" onClick={() => onQueryChange('')}>
+            <ActionIcon
+              variant="subtle"
+              size="sm"
+              onClick={() => onQueryChange('')}
+              aria-label="Clear search"
+            >
               <IconX size={12} />
             </ActionIcon>
           ) : null
@@ -43,7 +48,7 @@ export function SearchBar({
         style={{ flex: 1, minWidth: 200, maxWidth: 480 }}
       />
       <Tooltip
-        label={`Search is scoped to ${scopeLabel}. Switch libraries from the left sidebar.`}
+        label={`Searching in ${scopeLabel}. Pick a different library in the sidebar to search elsewhere.`}
         withinPortal
       >
         <Badge

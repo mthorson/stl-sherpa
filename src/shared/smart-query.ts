@@ -7,7 +7,7 @@
  * together — no boolean nesting in v1.
  */
 
-import type { ColorLabel } from './ratings';
+import { isColorLabel, type ColorLabel } from './ratings';
 
 export interface SmartQuery {
   /** Free-text FTS search applied across filename + tags + metadata. */
@@ -26,10 +26,19 @@ export function isSmartQuery(value: unknown): value is SmartQuery {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
   if (v.search != null && typeof v.search !== 'string') return false;
-  if (v.extensions != null && !Array.isArray(v.extensions)) return false;
-  if (v.tagIds != null && !Array.isArray(v.tagIds)) return false;
+  if (
+    v.extensions != null &&
+    !(Array.isArray(v.extensions) && v.extensions.every((e) => typeof e === 'string'))
+  )
+    return false;
+  if (v.tagIds != null && !(Array.isArray(v.tagIds) && v.tagIds.every(Number.isInteger)))
+    return false;
   if (v.minRating != null && typeof v.minRating !== 'number') return false;
-  if (v.colorLabels != null && !Array.isArray(v.colorLabels)) return false;
+  if (
+    v.colorLabels != null &&
+    !(Array.isArray(v.colorLabels) && v.colorLabels.every(isColorLabel))
+  )
+    return false;
   return true;
 }
 

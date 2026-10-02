@@ -40,7 +40,7 @@ function toJob(r: RawRow): ThumbJob {
 }
 
 export interface ThumbJobsRepo {
-  /** Enqueue a job for a file. Replaces any existing job for the same file. */
+  /** Enqueue or raise priority, preserving existing claims and retry history. */
   enqueue(fileId: number, priority: number): void;
   enqueueMany(items: Array<{ fileId: number; priority: number }>): number;
   /**
@@ -61,7 +61,11 @@ export interface ThumbJobsRepo {
    * abandonment (e.g. app shutdown mid-render) doesn't burn the retry budget.
    */
   releaseForRetry(jobId: number): void;
-  /** Reap stale claims (claimed_by another process or > maxAgeMs ago). */
+  /**
+   * Release claims older than maxAgeMs regardless of owner. Age-based only:
+   * another live process's fresh claims (shared NAS library) are left alone,
+   * and a crashed process's claims age out on their own.
+   */
   reapStale(thisProcess: string, maxAgeMs: number): number;
   /**
    * Drop every unclaimed job, returning how many were removed. In-flight
@@ -79,9 +83,7 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     VALUES (?, ?, ?)
   `);
 
-  // Drop any existing job for this file before inserting a new one. We never
-  // want duplicate jobs racing each other for the same file.
-  const deleteByFileStmt = db.prepare<[number]>(`DELETE FROM thumb_jobs WHERE file_id = ?`);
+  const existingStmt = db.prepare<[number]>(`SELECT id FROM thumb_jobs WHERE file_id = ? LIMIT 1`);
 
   const claimSelectStmt = db.prepare(`
     SELECT * FROM thumb_jobs
@@ -123,11 +125,15 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     WHERE id = ?
   `);
 
-  const reapStmt = db.prepare<[string, number]>(`
+  // Reap strictly by age. Reaping "any other process's claims" immediately
+  // would make two app instances sharing a NAS library steal each other's
+  // in-flight work on every reconcile; a crashed process's claims age past
+  // the cutoff on their own.
+  const reapStmt = db.prepare<[number]>(`
     UPDATE thumb_jobs
     SET claimed_at = NULL, claimed_by = NULL
     WHERE claimed_at IS NOT NULL
-      AND (claimed_by != ? OR claimed_at < ?)
+      AND claimed_at < ?
   `);
 
   const clearPendingStmt = db.prepare(`DELETE FROM thumb_jobs WHERE claimed_at IS NULL`);
@@ -137,26 +143,26 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     `SELECT COUNT(*) AS c FROM thumb_jobs WHERE claimed_at IS NOT NULL`
   );
 
+  const enqueueBatch = db.transaction((items: Array<{ fileId: number; priority: number }>) => {
+    let added = 0;
+    const now = Date.now();
+    for (const item of items) {
+      if (existingStmt.get(item.fileId)) {
+        bumpStmt.run(item.priority, item.fileId, item.priority);
+      } else {
+        enqueueStmt.run(item.fileId, item.priority, now);
+        added++;
+      }
+    }
+    return added;
+  });
+
   return {
     enqueue(fileId, priority) {
-      const tx = db.transaction(() => {
-        deleteByFileStmt.run(fileId);
-        enqueueStmt.run(fileId, priority, Date.now());
-      });
-      tx();
+      enqueueBatch.immediate([{ fileId, priority }]);
     },
     enqueueMany(items) {
-      let added = 0;
-      const now = Date.now();
-      const tx = db.transaction(() => {
-        for (const it of items) {
-          deleteByFileStmt.run(it.fileId);
-          enqueueStmt.run(it.fileId, it.priority, now);
-          added++;
-        }
-      });
-      tx();
-      return added;
+      return enqueueBatch.immediate(items);
     },
     claimNext(claimedBy) {
       // Two-statement claim wrapped in a transaction so two workers can't take
@@ -196,9 +202,9 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     releaseForRetry(jobId) {
       releaseForRetryStmt.run(jobId);
     },
-    reapStale(thisProcess, maxAgeMs) {
+    reapStale(_thisProcess, maxAgeMs) {
       const cutoff = Date.now() - maxAgeMs;
-      return reapStmt.run(thisProcess, cutoff).changes;
+      return reapStmt.run(cutoff).changes;
     },
     clearPending() {
       return clearPendingStmt.run().changes;

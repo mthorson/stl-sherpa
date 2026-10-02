@@ -12,6 +12,9 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MESHFLASK_SOFTWARE_RENDERING: '1'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -20,4 +23,56 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run test:full
+      - run: npm run test:integration
+      - name: Test the Electron app
+        run: xvfb-run -a npm run test:app
+        env:
+          MESHFLASK_SMOKE_OUTPUT: test-results/app
+      - name: Retain app diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-test-linux
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 7
+      - run: npm run build:icon && npm run dist:linux
+      - name: Test packaged AppImage
+        run: xvfb-run -a npm run test:packaged
+      - name: Retain packaged diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-test-linux
+          path: test-results/packaged/
+          if-no-files-found: warn
+          retention-days: 7
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      MESHFLASK_SOFTWARE_RENDERING: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:app
+        env:
+          MESHFLASK_SMOKE_OUTPUT: test-results/app
+      - name: Retain app diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-test-${{ matrix.os }}
+          path: test-results/app/
+          if-no-files-found: warn
+          retention-days: 7

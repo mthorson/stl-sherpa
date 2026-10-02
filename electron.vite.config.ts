@@ -24,7 +24,7 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: resolve('src/preload/preload.ts') }
+        input: { index: resolve('src/preload/preload.ts'), thumbWorker: resolve('src/preload/thumb-worker.ts') }
       }
     }
   },
@@ -50,12 +50,7 @@ export default defineConfig({
         input: {
           index: resolve('src/renderer/index.html'),
           thumbWorker: resolve('src/renderer/thumb-worker.html')
-        },
-        // The hidden thumb-worker page runs with nodeIntegration: true so it
-        // can use electron + fs at runtime. Mark them external so vite/rollup
-        // doesn't try to bundle them. The visible renderer doesn't import
-        // these, so externals here have no effect on its bundle.
-        external: ['electron', 'fs', 'fs/promises', 'path', 'os']
+        }
       }
     }
   }

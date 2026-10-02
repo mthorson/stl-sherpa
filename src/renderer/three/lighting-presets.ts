@@ -55,7 +55,7 @@ export interface LightingPresetDefinition {
 export const STUDIO_PRESET: LightingPresetDefinition = {
   id: 'studio',
   label: 'Studio',
-  description: 'Balanced three-point with rim — best general-purpose look.',
+  description: 'Balanced three-point lighting with a rim light. The best general-purpose look.',
   exposure: 0.85,
   environmentIntensity: 0.4,
   ambient: { color: 0xffffff, intensity: 0.2 },
@@ -88,7 +88,7 @@ export const STUDIO_PRESET: LightingPresetDefinition = {
 export const NORMALS_PRESET: LightingPresetDefinition = {
   id: 'normals',
   label: 'Normals',
-  description: 'Color-codes surface direction (axis-aligned RGB+CMY lights) — useful for spotting flipped faces and topology issues.',
+  description: 'Color-codes surface direction, which helps spot flipped faces and topology issues.',
   // Lower exposure than other presets so the saturated colors don't clip.
   exposure: 0.8,
   // No IBL: env-map adds neutral fill that would wash out the color cues.
@@ -110,7 +110,7 @@ export const NORMALS_PRESET: LightingPresetDefinition = {
 export const DRAMATIC_PRESET: LightingPresetDefinition = {
   id: 'dramatic',
   label: 'Dramatic',
-  description: 'Single strong key with low ambient — deep shadows and mood.',
+  description: 'A single strong key light with low ambient. Deep shadows and mood.',
   exposure: 0.8,
   environmentIntensity: 0.12,
   ambient: { color: 0xffffff, intensity: 0.07 },
@@ -129,7 +129,7 @@ export const DRAMATIC_PRESET: LightingPresetDefinition = {
 export const PRODUCT_PRESET: LightingPresetDefinition = {
   id: 'product',
   label: 'Product',
-  description: 'Clean low-contrast all-around fill for catalog-style reveal.',
+  description: 'Clean, low-contrast fill from all around. Good for catalog-style shots.',
   exposure: 0.9,
   environmentIntensity: 0.7,
   // Higher ambient + multiple soft fills = catalog look with no harsh shadows.
@@ -147,7 +147,7 @@ export const PRODUCT_PRESET: LightingPresetDefinition = {
 export const OUTDOOR_PRESET: LightingPresetDefinition = {
   id: 'outdoor',
   label: 'Outdoor',
-  description: 'Warm low-angle key with cool sky — golden-hour feel.',
+  description: 'A warm low-angle key against a cool sky. Golden-hour feel.',
   exposure: 0.9,
   environmentIntensity: 0.55,
   // Warm sun low on the right; cool sky fill from above.

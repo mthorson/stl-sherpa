@@ -28,7 +28,10 @@ export function renderTemplate(
   total: number,
   template: string
 ): string {
-  const name = ctx.filename.endsWith(`.${ctx.ext}`)
+  // Case-insensitive suffix check: `ext` is always lowercased by extensionOf,
+  // but the on-disk filename may be HERO.STL. A case-sensitive check would
+  // fail and make {name} return the full filename, extension included.
+  const name = ctx.filename.toLowerCase().endsWith(`.${ctx.ext.toLowerCase()}`)
     ? ctx.filename.slice(0, -(ctx.ext.length + 1))
     : ctx.filename;
   const ext = ctx.ext ? `.${ctx.ext}` : '';
@@ -74,5 +77,9 @@ export function isInvalidFilename(name: string): boolean {
   if (name === '.' || name === '..') return true;
   // Windows reserved characters + control chars
   if (/[<>:"/\\|?*\x00-\x1f]/.test(name)) return true;
+  // Windows reserved device names — reserved with any extension (con.stl).
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(name)) return true;
+  // Windows silently strips trailing dots/spaces, desyncing DB from disk.
+  if (/[. ]$/.test(name)) return true;
   return false;
 }

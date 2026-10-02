@@ -5,6 +5,7 @@ import { PathResolver } from '@shared/paths';
 import { createFilesRepo, type FilesRepo, type UpsertInput, type RenameEntry } from '@main/db/repos/files';
 import { freshDb } from '@main/db/test-utils';
 import { walkLibrary } from '../walker';
+import { hashFileContent } from '@main/files/hash';
 import { runIntegration } from './gate';
 import { createLibraryHarness, type LibraryHarness } from './harness';
 
@@ -55,15 +56,26 @@ async function runScan(resolver: PathResolver, files: FilesRepo): Promise<ScanRe
     if (list) list.push(s);
     else staleBySig.set(key, [s]);
   }
+  const newCountBySig = new Map<string, number>();
+  for (const file of newPaths) {
+    const key = `${file.sizeBytes}:${file.mtimeMs}`;
+    newCountBySig.set(key, (newCountBySig.get(key) ?? 0) + 1);
+  }
 
   const renames: RenameEntry[] = [];
   const trueInserts: UpsertInput[] = [];
   for (const np of newPaths) {
     const key = `${np.sizeBytes}:${np.mtimeMs}`;
     const candidates = staleBySig.get(key);
-    if (candidates && candidates.length === 1) {
+    const candidate =
+      candidates?.length === 1 && newCountBySig.get(key) === 1 ? candidates[0] : null;
+    const digest =
+      candidate?.contentSha256 && candidate.ext === np.ext
+        ? await hashFileContent(resolver.toAbsolute(np.relPath))
+        : null;
+    if (candidate && digest === candidate.contentSha256) {
       renames.push({
-        id: candidates[0].id,
+        id: candidate.id,
         toRelPath: np.relPath,
         toParentDir: np.parentDir,
         toFilename: np.filename
@@ -78,6 +90,18 @@ async function runScan(resolver: PathResolver, files: FilesRepo): Promise<ScanRe
   const renamed = files.applyRenames(renames);
   const upsert = files.upsertMany([...matched, ...trueInserts]);
   const removed = files.deleteByRelPaths(toDelete);
+
+  const hashes = await Promise.all(
+    files.listMissingContentHash().map(async (item) => ({
+      ...item,
+      sha256: await hashFileContent(resolver.toAbsolute(item.relPath))
+    }))
+  );
+  files.setContentSha256Many(
+    hashes.filter(
+      (item): item is typeof item & { sha256: string } => item.sha256 !== null
+    )
+  );
 
   return {
     inserted: upsert.inserted,

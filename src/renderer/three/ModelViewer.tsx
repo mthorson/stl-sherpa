@@ -7,6 +7,10 @@ import { frameObject, objectCenter } from './framing';
 import { DEFAULT_LIGHTING_STYLE, LightingRig, type LightingStyle } from './lighting';
 import { applyOrientation } from './orientation';
 import type { CameraState, FileRecord } from '@shared/types';
+import { modelSourceKey, modelResourceUrl } from '@shared/model-source';
+import { scopedLogger } from '../logger';
+
+const log = scopedLogger('viewer');
 import {
   DEFAULT_RENDER_QUALITY,
   getRenderQualityPreset,
@@ -103,6 +107,12 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
   },
   ref
 ) {
+  const sourceKey = modelSourceKey(file);
+  const currentSourceRef = useRef(sourceKey);
+  currentSourceRef.current = sourceKey;
+  const loadedSourceRef = useRef<string | null>(null);
+  const orientationRef = useRef(file.orientation);
+  orientationRef.current = file.orientation;
   const qualityPreset: RenderQualityPreset = getRenderQualityPreset(renderQuality);
   const containerRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<ViewerCtx | null>(null);
@@ -123,11 +133,11 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     ref,
     () => ({
       hasModel() {
-        return ctxRef.current?.currentObject != null;
+        return ctxRef.current?.currentObject != null && loadedSourceRef.current === currentSourceRef.current;
       },
       async captureCurrentFrame() {
         const ctx = ctxRef.current;
-        if (!ctx || !ctx.currentObject) return null;
+        if (!ctx || !ctx.currentObject || loadedSourceRef.current !== currentSourceRef.current) return null;
         // Force a fresh render right before reading pixels — the rAF loop
         // composites and clears between frames, so blitting can return blank
         // unless we've just rendered. preserveDrawingBuffer:true on the
@@ -302,7 +312,12 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
   // installs the new set. Quality is passed through so the rig keeps env-map
   // sharpness + shadow caster in sync with the active tier.
   useEffect(() => {
-    ctxRef.current?.lighting.apply(lightingStyle, qualityPreset);
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    ctx.lighting.apply(lightingStyle, qualityPreset);
+    if (ctx.currentObject) {
+      ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
+    }
   }, [lightingStyle, qualityPreset]);
 
   // Up-axis change → re-apply orientation AND reframe the camera. Changing
@@ -312,6 +327,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     const ctx = ctxRef.current;
     if (!ctx?.currentObject) return;
     applyOrientation(ctx.currentObject, file.orientation);
+    ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
     frameObject(ctx.camera, ctx.currentObject);
     ctx.controls.target.copy(objectCenter(ctx.currentObject));
     ctx.controls.update();
@@ -327,6 +343,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     const ctx = ctxRef.current;
     if (!ctx?.currentObject) return;
     applyOrientation(ctx.currentObject, file.orientation);
+    ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
     ctx.controls.target.copy(objectCenter(ctx.currentObject));
   }, [file.orientation.yaw]);
 
@@ -354,25 +371,34 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     }
 
     const load = async () => {
+      const startedAt = performance.now();
+      log.debug('model load started', { libraryId: file.libraryId, fileId: file.id, ext: file.ext, sourceKey });
       try {
         // Use file.libraryId so cross-library views (the "All Libraries"
         // sidebar entry) resolve correctly without the parent needing to
         // pipe a per-tile library prop.
         const res = await fetch(`wh3d-file://${file.libraryId}/${file.id}`, {
-          signal: abort.signal
+          signal: abort.signal,
+          cache: 'no-store'
         });
-        if (!res.ok) throw new Error(`Failed to load model (${res.status})`);
+        if (!res.ok) throw new Error(`Couldn't load this file (error ${res.status}).`);
         const buffer = await res.arrayBuffer();
         if (canceled) return;
 
-        const obj = await loadModel(buffer, file.ext, '', file.orientation);
+        const obj = await loadModel(buffer, file.ext, '', file.orientation,
+          (uri) => modelResourceUrl(file.libraryId, file.id, uri));
         if (canceled) {
           disposeObject(obj);
           return;
         }
+        // Orientation may change while a large model is parsing. Apply the
+        // latest value before the object becomes visible.
+        applyOrientation(obj, orientationRef.current);
 
         ctx.scene.add(obj);
         ctx.currentObject = obj;
+        loadedSourceRef.current = sourceKey;
+        log.debug('model loaded', { libraryId: file.libraryId, fileId: file.id, ms: Math.round(performance.now() - startedAt) });
 
         // Apply quality-tier shadow flags + texture anisotropy. Cheap to
         // do here and means re-loading a file picks up any quality change.
@@ -390,7 +416,10 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
 
         // Prefer the saved camera (captured when the user composed the
         // thumbnail) over the default frame-fit, so reopening the file
-        // restarts at the same angle.
+        // restarts at the same angle. frameObject still runs first because
+        // it sets near/far to match the model's scale — without that, a
+        // large model reopens clipped by the default far plane.
+        frameObject(ctx.camera, obj);
         if (file.camera) {
           ctx.camera.position.set(
             file.camera.position[0],
@@ -406,14 +435,14 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
           ctx.camera.updateProjectionMatrix();
           ctx.controls.update();
         } else {
-          frameObject(ctx.camera, obj);
           ctx.controls.target.copy(objectCenter(obj));
           ctx.controls.update();
         }
 
         setLoading(false);
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
+        if (canceled || (err as Error).name === 'AbortError') return;
+        log.warn('model preview failed', { libraryId: file.libraryId, fileId: file.id, error: (err as Error).message });
         if (err instanceof ThreeMFEmbeddedOnlyError && err.png) {
           const blob = new Blob([err.png as BlobPart], { type: 'image/png' });
           setEmbeddedPngUrl(URL.createObjectURL(blob));
@@ -431,7 +460,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
       canceled = true;
       abort.abort();
     };
-  }, [file.libraryId, file.id, file.ext, renderQuality]);
+  }, [sourceKey, file.ext, renderQuality]);
 
   // Release the object URL on unmount.
   useEffect(() => {
@@ -478,7 +507,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
               borderRadius: 3
             }}
           >
-            Slicer preview (live 3D unavailable for this multi-part 3MF)
+            Showing the slicer's preview image. This 3MF is too big to open in 3D.
           </Text>
         </div>
       )}

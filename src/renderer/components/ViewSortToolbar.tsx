@@ -34,7 +34,7 @@ export function ViewSortToolbar({ sort, onSortChange, view, onViewChange }: Prop
         allowDeselect={false}
       />
       <Tooltip
-        label={sort.direction === 'asc' ? 'Ascending — click to reverse' : 'Descending — click to reverse'}
+        label={sort.direction === 'asc' ? 'Ascending. Click to reverse.' : 'Descending. Click to reverse.'}
         withinPortal
       >
         <ActionIcon

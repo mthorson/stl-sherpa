@@ -13,6 +13,12 @@ export interface TagsRepo {
   /** Whole tag hierarchy as a tree, sorted by name at each level. */
   listTree(): TagTreeNode[];
   listForFile(fileId: number): TagRecord[];
+  /**
+   * Tags carried by ANY of the given files; `fileCount` is how many of those
+   * files carry the tag. One query (chunked under SQLite's parameter limit)
+   * instead of one listForFile round trip per file.
+   */
+  listForFiles(fileIds: number[]): TagWithCount[];
   addToFile(fileId: number, tagId: number): void;
   removeFromFile(fileId: number, tagId: number): void;
   /** Delete a tag everywhere it's used. Children survive (FK SET NULL). */
@@ -125,6 +131,31 @@ export function createTagsRepo(db: Database.Database): TagsRepo {
     },
     listForFile(fileId) {
       return (listForFileStmt.all(fileId) as RawTagRow[]).map(toRecord);
+    },
+    listForFiles(fileIds) {
+      if (fileIds.length === 0) return [];
+      const byId = new Map<number, TagWithCount>();
+      const CHUNK = 500;
+      for (let i = 0; i < fileIds.length; i += CHUNK) {
+        const chunk = fileIds.slice(i, i + CHUNK);
+        const placeholders = chunk.map(() => '?').join(',');
+        const rows = db
+          .prepare(
+            `SELECT t.id, t.name, t.parent_id, COUNT(ft.file_id) AS file_count
+             FROM tags t JOIN file_tags ft ON ft.tag_id = t.id
+             WHERE ft.file_id IN (${placeholders})
+             GROUP BY t.id`
+          )
+          .all(...chunk) as RawTagWithCountRow[];
+        for (const r of rows) {
+          const prev = byId.get(r.id);
+          if (prev) prev.fileCount += r.file_count;
+          else byId.set(r.id, { id: r.id, name: r.name, parentId: r.parent_id, fileCount: r.file_count });
+        }
+      }
+      return [...byId.values()].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      );
     },
     addToFile(fileId, tagId) {
       addToFileStmt.run(fileId, tagId);

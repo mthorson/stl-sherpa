@@ -1,9 +1,14 @@
 import chokidar from 'chokidar';
-import { stat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { looksLikeNetworkMount, type PathResolver } from '@shared/paths';
+import type { PathResolver } from '@shared/paths';
+import { isNetworkMount } from '@main/files/network-mount';
 import { extensionOf, isSupportedExtension } from '@shared/formats';
 import type { FilesRepo } from '@main/db/repos/files';
+import { hashFileContent } from '@main/files/hash';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('watcher');
 
 // fsevents (mac) and inotify (linux) don't fire on network mounts, so chokidar
 // is silent there unless we fall back to polling. 10s keeps NAS load low at
@@ -43,7 +48,7 @@ function shouldIgnore(absPath: string): boolean {
 }
 
 export interface LibraryWatcher {
-  close(): Promise<void>;
+  close(options?: { flushPending?: boolean }): Promise<void>;
 }
 
 interface PendingUnlink {
@@ -53,6 +58,7 @@ interface PendingUnlink {
   ext: string;
   sizeBytes: number;
   mtimeMs: number;
+  contentSha256: string | null;
   timer: NodeJS.Timeout;
 }
 
@@ -63,9 +69,14 @@ export function startWatcher(
   opts: WatcherOptions = {}
 ): LibraryWatcher {
   const root = resolver.getMountPath();
-  const isNetwork = looksLikeNetworkMount(root);
-  const pollMs = opts.nasPollIntervalMs ?? DEFAULT_NAS_POLL_INTERVAL_MS;
+  const isNetwork = isNetworkMount(root);
+  const requestedPollMs = opts.nasPollIntervalMs;
+  const pollMs =
+    typeof requestedPollMs === 'number' && Number.isFinite(requestedPollMs)
+      ? Math.min(60_000, Math.max(1_000, requestedPollMs))
+      : DEFAULT_NAS_POLL_INTERVAL_MS;
 
+  log.debug('watcher started', { root, polling: isNetwork, pollMs });
   const watcher = chokidar.watch(root, {
     ignoreInitial: true,
     persistent: true,
@@ -75,6 +86,7 @@ export function startWatcher(
       pollInterval: 150
     },
     depth: 99,
+    followSymlinks: false,
     // fsevents/inotify don't fire on network mounts. Fall back to polling so
     // external Finder changes still propagate; accept the staleness window.
     usePolling: isNetwork,
@@ -87,10 +99,32 @@ export function startWatcher(
   // preserve the file's id, thumbnail, and tags. Otherwise the timer fires
   // and the unlink becomes a real delete.
   const pending = new Map<string, PendingUnlink[]>();
+  const pendingByPath = new Map<string, PendingUnlink>();
+  const activeTasks = new Set<Promise<void>>();
+  let closing = false;
+  let closePromise: Promise<void> | null = null;
+
+  const reportError = (err: unknown): void => {
+    try {
+      cb.onError?.(err instanceof Error ? err : new Error(String(err)));
+    } catch {
+      // Error reporting must not create an unhandled rejection of its own.
+    }
+  };
+
+  const runTask = (fn: () => Promise<void>): void => {
+    if (closing) return;
+    const task = fn()
+      .catch(reportError)
+      .finally(() => activeTasks.delete(task));
+    activeTasks.add(task);
+  };
 
   const sigKey = (size: number, mtime: number) => `${size}:${mtime}`;
 
   const removePending = (entry: PendingUnlink): void => {
+    clearTimeout(entry.timer);
+    if (pendingByPath.get(entry.relPath) === entry) pendingByPath.delete(entry.relPath);
     const key = sigKey(entry.sizeBytes, entry.mtimeMs);
     const list = pending.get(key);
     if (!list) return;
@@ -99,19 +133,27 @@ export function startWatcher(
     if (list.length === 0) pending.delete(key);
   };
 
-  const handleAddOrChange = async (absPath: string) => {
+  const handleAddOrChange = async (absPath: string, allowRename: boolean) => {
     const ext = extensionOf(absPath);
     if (!isSupportedExtension(ext)) return;
 
-    let s: Awaited<ReturnType<typeof stat>>;
-    try {
-      s = await stat(absPath);
-    } catch {
-      return;
-    }
     let relPath: string;
     try {
       relPath = resolver.toRelative(absPath);
+    } catch {
+      return;
+    }
+    // Cancel before awaiting stat: a slow NAS must not let the old unlink
+    // timer delete a replacement while we are inspecting it.
+    const replaced = pendingByPath.get(relPath);
+    if (replaced) {
+      log.debug('replacement cancels unlink', { relPath });
+      removePending(replaced);
+    }
+    let s: Awaited<ReturnType<typeof stat>>;
+    try {
+      if ((await lstat(absPath)).isSymbolicLink()) return;
+      s = await stat(absPath);
     } catch {
       return;
     }
@@ -125,24 +167,49 @@ export function startWatcher(
     // pending bucket. Pair them, cancel the delete timer, rename in place.
     const key = sigKey(sizeBytes, mtimeMs);
     const bucket = pending.get(key);
-    if (bucket && bucket.length > 0 && ext === bucket[0].ext) {
-      const match = bucket.shift()!;
-      if (bucket.length === 0) pending.delete(key);
-      clearTimeout(match.timer);
-      files.applyRenames([
-        {
-          id: match.fileId,
-          toRelPath: relPath,
-          toParentDir: parentDir,
-          toFilename: filename
-        }
-      ]);
-      cb.onChange();
-      return;
+    const matches = bucket?.filter((entry) => entry.ext === ext) ?? [];
+    if (allowRename && !files.getByRelPath(relPath) && bucket && matches.length === 1) {
+      const match = matches[0];
+      // Reserve the candidate before hashing. Large files can take longer
+      // than the rename window, and its delete timer must not fire mid-hash.
+      removePending(match);
+      const digest = match.contentSha256 ? await hashFileContent(absPath) : null;
+      if (match.contentSha256 === null || digest === match.contentSha256) {
+        files.applyRenames([
+          {
+            id: match.fileId,
+            toRelPath: relPath,
+            toParentDir: parentDir,
+            toFilename: filename
+          }
+        ]);
+        cb.onChange();
+        return;
+      }
+      files.deleteByRelPath(match.relPath);
     }
 
-    files.upsert({ relPath, parentDir, filename, ext, sizeBytes, mtimeMs });
+    const outcome = files.upsert({ relPath, parentDir, filename, ext, sizeBytes, mtimeMs });
+    log.debug('file indexed', { relPath, outcome });
     cb.onChange();
+  };
+
+  const settleUnlink = async (entry: PendingUnlink): Promise<void> => {
+    // The pathname may now belong to a different row after an app rename.
+    if (files.getByRelPath(entry.relPath)?.id !== entry.fileId) return;
+    try {
+      const current = await lstat(resolver.toAbsolute(entry.relPath));
+      if (current.isFile()) {
+        // Recreated before chokidar emitted its stabilized add event.
+        await handleAddOrChange(resolver.toAbsolute(entry.relPath), false);
+        return;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    if (files.getByRelPath(entry.relPath)?.id === entry.fileId && files.deleteByRelPath(entry.relPath)) {
+      cb.onChange();
+    }
   };
 
   const handleUnlink = (absPath: string) => {
@@ -157,6 +224,8 @@ export function startWatcher(
     const file = files.getByRelPath(relPath);
     if (!file) return;
 
+    const previous = pendingByPath.get(relPath);
+    if (previous) removePending(previous);
     const entry: PendingUnlink = {
       fileId: file.id,
       relPath: file.relPath,
@@ -164,33 +233,60 @@ export function startWatcher(
       ext: file.ext,
       sizeBytes: file.sizeBytes,
       mtimeMs: file.mtimeMs,
+      contentSha256: file.contentSha256,
       timer: setTimeout(() => {
         removePending(entry);
-        if (files.deleteByRelPath(file.relPath)) cb.onChange();
+        runTask(() => settleUnlink(entry));
       }, RENAME_WINDOW_MS)
     };
+    log.debug('unlink pending', { relPath, fileId: file.id });
+    pendingByPath.set(relPath, entry);
     const key = sigKey(file.sizeBytes, file.mtimeMs);
     const list = pending.get(key);
     if (list) list.push(entry);
     else pending.set(key, [entry]);
   };
 
-  watcher.on('add', (p) => void handleAddOrChange(p));
-  watcher.on('change', (p) => void handleAddOrChange(p));
-  watcher.on('unlink', (p) => handleUnlink(p));
-  watcher.on('error', (err) => cb.onError?.(err as Error));
+  watcher.on('add', (p) => runTask(() => handleAddOrChange(p, true)));
+  watcher.on('change', (p) => runTask(() => handleAddOrChange(p, false)));
+  watcher.on('unlink', (p) => {
+    if (closing) return;
+    try {
+      handleUnlink(p);
+    } catch (err) {
+      reportError(err);
+    }
+  });
+  watcher.on('error', reportError);
 
   return {
-    async close() {
-      // Flush any pending unlinks to real deletes so we don't leak rows.
-      for (const list of pending.values()) {
-        for (const entry of list) {
-          clearTimeout(entry.timer);
-          if (files.deleteByRelPath(entry.relPath)) cb.onChange();
-        }
+    close(options = {}) {
+      if (!closePromise) {
+        closePromise = (async () => {
+          closing = true;
+          log.debug('watcher stopping', { root, pending: pendingByPath.size, flushPending: options.flushPending !== false });
+          // Stop timers before waiting so none can touch the DB during close.
+          for (const list of pending.values()) {
+            for (const entry of list) clearTimeout(entry.timer);
+          }
+          await watcher.close();
+          await Promise.all(activeTasks);
+
+          if (options.flushPending !== false) {
+            // Flush unmatched unlinks after active add/change handlers have
+            // had their final chance to pair them as renames. A rescan opts
+            // out because its full diff owns stale-row reconciliation.
+            for (const list of pending.values()) {
+              for (const entry of list) {
+                await settleUnlink(entry);
+              }
+            }
+          }
+          pending.clear();
+          pendingByPath.clear();
+        })();
       }
-      pending.clear();
-      await watcher.close();
+      return closePromise;
     }
   };
 }

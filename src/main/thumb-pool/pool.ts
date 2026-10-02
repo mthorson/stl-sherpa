@@ -70,7 +70,8 @@ export class ThumbPool {
   }
 
   render(input: {
-    absPath: string;
+    libraryId: string;
+    fileId: number;
     ext: string;
     lightingStyle?: LightingStyle;
     orientation?: FileOrientation;
@@ -144,46 +145,20 @@ export class ThumbPool {
 
   private spawnWorker(): Worker {
     const id = this.nextWorkerId++;
-    // ─────────────────────────────────────────────────────────────────────
-    // SECURITY: thumb-worker BrowserWindow threat model
-    //
-    // The worker runs with nodeIntegration:true / contextIsolation:false /
-    // sandbox:false / webSecurity:false. These are normally renderer-side
-    // red flags, but the worker has no user-controlled attack surface:
-    //
-    //  1. It only loads our own bundled `thumb-worker.html` (loadURL/
-    //     loadFile below) — never arbitrary URLs and never user input.
-    //  2. Its only inputs are ThumbRenderRequest messages this main process
-    //     sends over IPC. The `absPath` field is always produced by
-    //     `PathResolver.toAbsolute(file.relPath)` on a row this main
-    //     process pulled from the library DB; `relPath` is validated for
-    //     traversal segments in PathResolver, so the worker's `fs.readFile`
-    //     cannot be steered outside an attached library by IPC payload.
-    //  3. webSecurity is off because Three.js loaders need to follow
-    //     sibling `.bin` / texture references via `file://` URLs from the
-    //     model's directory — there's no remote origin in the picture.
-    //  4. Untrusted file content (the 3MF zip parse) goes through the
-    //     zip-safety guards in src/renderer/three/zip-safety.ts before
-    //     fflate is allowed to allocate decompression buffers.
-    //
-    // If you ever want to accept absPath from the renderer side (drag/drop
-    // import, "open this loose file" feature, etc.), validate it against
-    // an attached library mount in the main process FIRST.
-    // ─────────────────────────────────────────────────────────────────────
+    // Workers receive file identities through a narrow preload bridge. Model
+    // bytes and glTF sidecars use the viewer's canonical-path-checked protocol.
     const window = new BrowserWindow({
       show: false,
       width: 600,
       height: 600,
       backgroundColor: '#000000',
       webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false,
-        sandbox: false,
+        preload: join(__dirname, '../preload/thumbWorker.js'),
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
         backgroundThrottling: false,
-        // The worker loads only our trusted code, so disable web security to
-        // let Three.js load any external resources from the model's directory
-        // (e.g., glTF + .bin + textures via file://).
-        webSecurity: false,
+        webSecurity: true,
         offscreen: false
       }
     });
@@ -199,6 +174,8 @@ export class ThumbPool {
       destroyed: false
     };
     this.workers.push(worker);
+    window.webContents.on('will-navigate', (event) => event.preventDefault());
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
     window.webContents.on('render-process-gone', (_e, details) => {
       // Detach + reject + respawn. A bad model file shouldn't take down the app.
@@ -218,22 +195,17 @@ export class ThumbPool {
     window.webContents.on('did-fail-load', (_e, code, description, url) => {
       log.error('worker did-fail-load', { workerId: id, code, description, url });
     });
-    window.webContents.on(
-      'console-message',
-      // Older signature: (event, level, message, line, sourceId). Cast the
-      // any-typed handler so this compiles across Electron versions.
-      ((_e: unknown, level: number, message: string, line: number, sourceId: string) => {
-        // Ignore electron-log's own renderer-side output. Worker code that logs
-        // via `electron-log/renderer` already reaches main through the dedicated
-        // log IPC channel, so re-capturing its console print here would only
-        // duplicate it — and feed a potential feedback loop. This bridge exists
-        // solely to surface raw breakage that bypasses electron-log (unresolved
-        // imports, Three.js console errors, etc.).
-        if (sourceId.includes('electron-log')) return;
-        const sink = level >= 2 ? log.warn : log.info;
-        sink(`[worker ${id}] ${message}`, { sourceId, line });
-      }) as never
-    );
+    window.webContents.on('console-message', (event) => {
+      // Ignore electron-log's own renderer-side output. Worker code that logs
+      // via `electron-log/renderer` already reaches main through the dedicated
+      // log IPC channel, so re-capturing its console print here would only
+      // duplicate it — and feed a potential feedback loop. This bridge exists
+      // solely to surface raw breakage that bypasses electron-log (unresolved
+      // imports, Three.js console errors, etc.).
+      if ((event.sourceId ?? '').includes('electron-log')) return;
+      const sink = event.level === 'warning' || event.level === 'error' ? log.warn : log.info;
+      sink(`[worker ${id}] ${event.message}`, { sourceId: event.sourceId, line: event.lineNumber });
+    });
 
     if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
       const base = process.env.ELECTRON_RENDERER_URL.replace(/\/$/, '');
@@ -255,7 +227,8 @@ export class ThumbPool {
       log.warn('worker render timeout', {
         workerId: worker.id,
         jobId: stuckJob?.req.jobId,
-        absPath: stuckJob?.req.absPath,
+        libraryId: stuckJob?.req.libraryId,
+        fileId: stuckJob?.req.fileId,
         timeoutMs: this.perJobTimeoutMs
       });
       if (stuckJob) stuckJob.reject(new Error(`Render timed out after ${this.perJobTimeoutMs}ms`));

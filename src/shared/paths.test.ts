@@ -179,3 +179,23 @@ describe('looksLikeNetworkMount', () => {
     expect(looksLikeNetworkMount('C:\\Users\\matt\\foo')).toBe(false);
   });
 });
+
+describe('PathResolver — root mounts (whole drive / filesystem root)', () => {
+  it('round-trips under a Windows drive root', () => {
+    const r = new PathResolver('Z:\\');
+    expect(r.toRelative('Z:\\models\\hero.stl')).toBe('models/hero.stl');
+    expect(r.toAbsolute('models/hero.stl')).toBe('Z:\\models\\hero.stl');
+    expect(r.toRelative('Z:\\')).toBe('');
+  });
+
+  it('round-trips under the POSIX root', () => {
+    const r = new PathResolver('/');
+    expect(r.toRelative('/models/hero.stl')).toBe('models/hero.stl');
+    expect(r.toAbsolute('models/hero.stl')).toBe('/models/hero.stl');
+  });
+
+  it('still rejects paths outside a drive-root mount', () => {
+    const r = new PathResolver('Z:\\');
+    expect(() => r.toRelative('D:\\models\\hero.stl')).toThrow();
+  });
+});

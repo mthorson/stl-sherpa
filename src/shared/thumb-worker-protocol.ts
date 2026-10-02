@@ -17,8 +17,9 @@ export const THUMB_WORKER_RENDER_SIZE = 512;
 
 export interface ThumbRenderRequest {
   jobId: number;
-  /** Absolute path on this machine; main resolves via PathResolver. */
-  absPath: string;
+  /** File identity resolved through the same checked protocol as the live viewer. */
+  libraryId: string;
+  fileId: number;
   ext: string;
   /** Optional lighting preset; falls back to default if omitted. */
   lightingStyle?: LightingStyle;
@@ -35,3 +36,9 @@ export type ThumbRenderResult =
       jobsRendered: number;
     }
   | { jobId: number; ok: false; error: string; jobsRendered: number };
+
+export interface ThumbWorkerApi {
+  onRender(handler: (request: ThumbRenderRequest) => void): void;
+  ready(): void;
+  result(result: ThumbRenderResult): void;
+}

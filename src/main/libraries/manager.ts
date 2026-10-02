@@ -1,7 +1,7 @@
 import { existsSync, rmSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { v4 as uuid } from 'uuid';
-import type Database from 'better-sqlite3';
+import Database from 'better-sqlite3';
 import type { LibrarySummary } from '@shared/types';
 import {
   DB_FILENAME,
@@ -19,6 +19,7 @@ import { createThumbnailsRepo, type ThumbnailsRepo } from '@main/db/repos/thumbn
 import { createThumbJobsRepo, type ThumbJobsRepo } from '@main/db/repos/thumb-jobs';
 import { createThumbErrorsRepo, type ThumbErrorsRepo } from '@main/db/repos/thumb-errors';
 import { createCollectionsRepo, type CollectionsRepo } from '@main/db/repos/collections';
+import { createCollectionQuery, type CollectionQuery } from '@main/collections/query';
 import { scanner } from '@main/scanner/service';
 import { PathResolver } from '@shared/paths';
 import { scopedLogger } from '@main/logger';
@@ -41,6 +42,7 @@ export interface OpenLibrary {
   thumbJobs: ThumbJobsRepo;
   thumbErrors: ThumbErrorsRepo;
   collections: CollectionsRepo;
+  collectionQuery: CollectionQuery;
 }
 
 const open = new Map<string, OpenLibrary>();
@@ -56,16 +58,19 @@ function toSummary(entry: registry.RegistryEntry, online: boolean): LibrarySumma
 }
 
 function attachLibrary(entry: registry.RegistryEntry, db: Database.Database): OpenLibrary {
+  const files = createFilesRepo(db, entry.id);
+  const collections = createCollectionsRepo(db);
   const handle: OpenLibrary = {
     entry,
     db,
     resolver: new PathResolver(entry.mountPath),
-    files: createFilesRepo(db, entry.id),
+    files,
     tags: createTagsRepo(db),
     thumbnails: createThumbnailsRepo(db),
     thumbJobs: createThumbJobsRepo(db),
     thumbErrors: createThumbErrorsRepo(db),
-    collections: createCollectionsRepo(db)
+    collections,
+    collectionQuery: createCollectionQuery(files, collections)
   };
   open.set(entry.id, handle);
 
@@ -94,8 +99,8 @@ function attachLibrary(entry: registry.RegistryEntry, db: Database.Database): Op
   return handle;
 }
 
-function detachLibrary(id: string): void {
-  scanner.detach(id);
+async function detachLibrary(id: string): Promise<void> {
+  await scanner.detach(id);
   const handle = open.get(id);
   if (handle) {
     try {
@@ -172,10 +177,10 @@ export function listOpenLibraries(): OpenLibrary[] {
   return [...open.values()];
 }
 
-export function addLibrary(args: {
+export async function addLibrary(args: {
   mountPath: string;
   name?: string;
-}): { ok: true; library: LibrarySummary } | { ok: false; error: string } {
+}): Promise<{ ok: true; library: LibrarySummary } | { ok: false; error: string }> {
   const { mountPath } = args;
 
   if (!existsSync(mountPath)) {
@@ -183,6 +188,13 @@ export function addLibrary(args: {
   }
   if (!statSync(mountPath).isDirectory()) {
     return { ok: false, error: `Not a directory: ${mountPath}` };
+  }
+
+  // Re-adding an already open mount must close its writer before the raw
+  // database and journal files are copied into the backup directory.
+  const registeredAtMount = registry.listEntries().find((entry) => entry.mountPath === mountPath);
+  if (registeredAtMount && open.has(registeredAtMount.id)) {
+    await detachLibrary(registeredAtMount.id);
   }
 
   let db: Database.Database;
@@ -215,12 +227,85 @@ export function addLibrary(args: {
   registry.upsertEntry({ id, label: name, mountPath, lastSeen: Date.now() });
 
   // Detach any prior handle for this id (different mount) and re-attach.
-  if (open.has(id)) detachLibrary(id);
+  if (open.has(id)) await detachLibrary(id);
   const entry = registry.findById(id)!;
   attachLibrary(entry, db);
   log.info('library added', { id, name, mountPath });
 
   return { ok: true, library: toSummary(entry, true) };
+}
+
+/**
+ * Re-point a registered library at a new folder (the library moved or was
+ * renamed on disk). The folder must contain this exact library's DB — we
+ * match the `library.id` row against the registry entry so the user can't
+ * accidentally graft a different library onto this entry.
+ */
+export async function relocateLibrary(args: {
+  id: string;
+  newMountPath: string;
+}): Promise<{ ok: true; library: LibrarySummary } | { ok: false; error: string }> {
+  const entry = registry.findById(args.id);
+  if (!entry) return { ok: false, error: 'Library not found' };
+  const { newMountPath } = args;
+
+  if (!existsSync(newMountPath)) {
+    return { ok: false, error: `Folder does not exist: ${newMountPath}` };
+  }
+  if (!statSync(newMountPath).isDirectory()) {
+    return { ok: false, error: `Not a directory: ${newMountPath}` };
+  }
+  if (!existsSync(join(newMountPath, DB_FILENAME))) {
+    return {
+      ok: false,
+      error: `That folder isn't a meshFlask library (no ${DB_FILENAME} inside). Pick the folder that used to live at ${entry.mountPath}.`
+    };
+  }
+
+  let row: { id: string; name: string } | null;
+  try {
+    const candidate = new Database(join(newMountPath, DB_FILENAME), {
+      readonly: true,
+      fileMustExist: true
+    });
+    try {
+      row = readLibraryRow(candidate);
+    } finally {
+      candidate.close();
+    }
+  } catch (e) {
+    return { ok: false, error: `Failed to inspect DB: ${(e as Error).message}` };
+  }
+  if (!row || row.id !== entry.id) {
+    return {
+      ok: false,
+      error: row
+        ? `That folder holds a different library ("${row.name}"), not "${entry.label}".`
+        : `That folder's ${DB_FILENAME} has no library record; it may be corrupt.`
+    };
+  }
+
+  // The source folder may have been moved while its old handle was still
+  // open. Close that writer before taking the backup at the new path.
+  if (open.has(entry.id)) await detachLibrary(entry.id);
+
+  let db: Database.Database;
+  try {
+    rotateBackup(newMountPath);
+    db = openLibraryDatabase(newMountPath);
+  } catch (e) {
+    return { ok: false, error: `Failed to open DB: ${(e as Error).message}` };
+  }
+
+  registry.upsertEntry({ ...entry, mountPath: newMountPath, lastSeen: Date.now() });
+  const updated = registry.findById(entry.id)!;
+  attachLibrary(updated, db);
+  log.info('library relocated', {
+    id: entry.id,
+    from: entry.mountPath,
+    to: newMountPath
+  });
+  return { ok: true, library: toSummary(updated, true) };
 }
 
 export function renameLibrary(args: {
@@ -244,11 +329,11 @@ export function renameLibrary(args: {
   return { ok: true, library: toSummary({ ...entry, label: name }, !!handle) };
 }
 
-export function removeLibrary(args: {
+export async function removeLibrary(args: {
   id: string;
   deleteCache?: boolean;
-}): { ok: true } | { ok: false; error: string } {
-  detachLibrary(args.id);
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  await detachLibrary(args.id);
   const entry = registry.findById(args.id);
   registry.removeEntry(args.id);
   log.info('library removed', { id: args.id, deleteCache: !!args.deleteCache });
@@ -272,8 +357,8 @@ export function removeLibrary(args: {
   return { ok: true };
 }
 
-export function shutdown(): void {
-  scanner.detachAll();
+export async function shutdown(): Promise<void> {
+  await scanner.detachAll();
   for (const { db } of open.values()) {
     try {
       db.close();

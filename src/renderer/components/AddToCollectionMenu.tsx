@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Button, Menu, Modal, Stack, TextInput, Group } from '@mantine/core';
+import { Button, Menu } from '@mantine/core';
 import { IconFolderPlus, IconPlus, IconFolders } from '@tabler/icons-react';
 import type { CollectionRecord, CollectionWithCount } from '@shared/types';
+import { NamePromptModal } from './NamePromptModal';
 
 interface Props {
   collections: CollectionWithCount[];
@@ -58,8 +59,10 @@ export function AddToCollectionMenu({ collections, fileIds, onAdd, onCreate }: P
         </Menu.Dropdown>
       </Menu>
 
-      <CreateModal
+      <NamePromptModal
         opened={createOpen}
+        title="New collection"
+        confirmLabel="Create & add"
         onCancel={() => setCreateOpen(false)}
         onConfirm={async (name) => {
           setCreateOpen(false);
@@ -68,67 +71,5 @@ export function AddToCollectionMenu({ collections, fileIds, onAdd, onCreate }: P
         }}
       />
     </>
-  );
-}
-
-function CreateModal({
-  opened,
-  onCancel,
-  onConfirm
-}: {
-  opened: boolean;
-  onCancel: () => void;
-  onConfirm: (name: string) => void;
-}) {
-  const [value, setValue] = useState('');
-  const trimmed = value.trim();
-  const canSubmit = trimmed.length > 0;
-
-  return (
-    <Modal
-      opened={opened}
-      onClose={() => {
-        setValue('');
-        onCancel();
-      }}
-      title="New collection"
-      centered
-      size="sm"
-    >
-      <Stack gap="md">
-        <TextInput
-          label="Name"
-          value={value}
-          onChange={(e) => setValue(e.currentTarget.value)}
-          data-autofocus
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && canSubmit) {
-              onConfirm(trimmed);
-              setValue('');
-            }
-          }}
-        />
-        <Group justify="flex-end" gap="sm">
-          <Button
-            variant="default"
-            onClick={() => {
-              setValue('');
-              onCancel();
-            }}
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={!canSubmit}
-            onClick={() => {
-              onConfirm(trimmed);
-              setValue('');
-            }}
-          >
-            Create &amp; add
-          </Button>
-        </Group>
-      </Stack>
-    </Modal>
   );
 }

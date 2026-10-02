@@ -111,14 +111,14 @@ export function BatchRenameModal({ opened, libraryId, files, onClose }: Props) {
       } else if (result.collisions && result.collisions.length > 0) {
         notifications.show({
           color: 'orange',
-          title: 'Rename aborted — collisions',
+          title: "Couldn't rename: name conflicts",
           message: result.collisions.slice(0, 5).join(', ')
         });
       } else {
         notifications.show({
           color: 'red',
           title: 'Rename failed',
-          message: result.error ?? 'Unknown error; changes rolled back.'
+          message: result.error ?? 'Something went wrong, so nothing was renamed.'
         });
       }
     } finally {
@@ -154,7 +154,8 @@ export function BatchRenameModal({ opened, libraryId, files, onClose }: Props) {
         )}
         {anyCollision && (
           <Alert color="orange" icon={<IconAlertCircle size={14} />}>
-            Some files would resolve to the same name. Add a {`{counter}`} token to disambiguate.
+            Some files would end up with the same name. Add a {`{counter}`} token to make each
+            one unique.
           </Alert>
         )}
 
@@ -187,8 +188,8 @@ export function BatchRenameModal({ opened, libraryId, files, onClose }: Props) {
                         fw={r.changed ? 500 : 400}
                       >
                         {r.newName}
-                        {r.warning && ` — ${r.warning}`}
-                        {colliding && !r.warning && ' — duplicate target'}
+                        {r.warning && ` (${r.warning})`}
+                        {colliding && !r.warning && ' (duplicate name)'}
                       </Text>
                     </Table.Td>
                   </Table.Tr>

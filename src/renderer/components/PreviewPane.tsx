@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -28,6 +28,7 @@ import {
   getDefaultOrientation,
   getYaw,
   rotateYaw,
+  type FileOrientation,
   type UpAxis
 } from '@shared/orientation';
 import { ModelViewer, type ModelViewerHandle } from '../three/ModelViewer';
@@ -67,6 +68,23 @@ export function PreviewPane({
   // resize so the overlay always matches what captureCurrentFrame() crops.
   const [cropSize, setCropSize] = useState(0);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const latestOrientationRef = useRef<{
+    fileId: number | null;
+    orientation: FileOrientation | null;
+  }>({ fileId: null, orientation: null });
+  if (latestOrientationRef.current.fileId !== (file?.id ?? null)) {
+    latestOrientationRef.current = {
+      fileId: file?.id ?? null,
+      orientation: file?.orientation ?? null
+    };
+  }
+
+  useEffect(() => {
+    latestOrientationRef.current = {
+      fileId: file?.id ?? null,
+      orientation: file?.orientation ?? null
+    };
+  }, [file?.id, file?.orientation.upAxis, file?.orientation.yaw]);
 
   // Callback ref so the ResizeObserver attaches the moment the wrapper
   // div enters the DOM (after a file selection switches PreviewPane out of
@@ -101,14 +119,18 @@ export function PreviewPane({
   const yaw = getYaw(file.orientation);
 
   const setOrientation = (next: { upAxis?: UpAxis; yaw?: number }) => {
-    void ipc.setFileOrientation(file.libraryId, file.id, {
-      upAxis: next.upAxis ?? file.orientation.upAxis,
-      yaw: next.yaw ?? yaw
-    });
+    const current = latestOrientationRef.current.orientation ?? file.orientation;
+    const value = {
+      upAxis: next.upAxis ?? current.upAxis,
+      yaw: next.yaw ?? getYaw(current)
+    };
+    latestOrientationRef.current = { fileId: file.id, orientation: value };
+    void ipc.setFileOrientation(file.libraryId, file.id, value);
   };
 
   const handleRotate = (deltaDeg: number) => {
-    setOrientation({ yaw: rotateYaw(yaw, deltaDeg) });
+    const current = latestOrientationRef.current.orientation ?? file.orientation;
+    setOrientation({ yaw: rotateYaw(getYaw(current), deltaDeg) });
   };
 
   const handleCapture = async () => {
@@ -126,8 +148,8 @@ export function PreviewPane({
     } catch (err) {
       notifications.show({
         color: 'orange',
-        title: 'Capture failed, falling back to default-view re-render',
-        message: (err as Error).message
+        title: "Couldn't capture that view",
+        message: `${(err as Error).message}. Rendering the default view instead.`
       });
     }
     onRerenderThumb(file.id);
@@ -205,12 +227,17 @@ export function PreviewPane({
           <Group justify="space-between" wrap="nowrap" gap="md">
             <Group gap="md" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
               <ControlBlock label="Lighting" hint={LIGHTING_PRESETS.find((p) => p.id === lightingStyle)?.label}>
-                <SegmentedControl
-                  size="xs"
-                  value={lightingStyle}
-                  onChange={(v) => onLightingStyleChange(v as LightingStyle)}
-                  data={LIGHTING_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
-                />
+                <Tooltip
+                  label={LIGHTING_PRESETS.find((p) => p.id === lightingStyle)?.description}
+                  withinPortal
+                >
+                  <SegmentedControl
+                    size="xs"
+                    value={lightingStyle}
+                    onChange={(v) => onLightingStyleChange(v as LightingStyle)}
+                    data={LIGHTING_PRESETS.map((p) => ({ value: p.id, label: p.label }))}
+                  />
+                </Tooltip>
               </ControlBlock>
 
               <ControlBlock
@@ -224,7 +251,7 @@ export function PreviewPane({
                       style={{ cursor: 'pointer' }}
                       onClick={() => void ipc.setFileOrientation(file.libraryId, file.id, null)}
                     >
-                      reset (def {getDefaultOrientation(file.ext).upAxis})
+                      reset to default ({getDefaultOrientation(file.ext).upAxis})
                     </Text>
                   ) : (
                     file.orientation.upAxis

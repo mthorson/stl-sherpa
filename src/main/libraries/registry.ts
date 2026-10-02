@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, renameSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 
 export interface RegistryEntry {
@@ -43,7 +43,10 @@ function readFile(): RegistryFile {
 function writeFile(file: RegistryFile): void {
   const path = registryPath();
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(file, null, 2), 'utf8');
+  // Write-then-rename so a crash mid-write can't leave a corrupt file behind.
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(file, null, 2), 'utf8');
+  renameSync(tmp, path);
 }
 
 export function listEntries(): RegistryEntry[] {

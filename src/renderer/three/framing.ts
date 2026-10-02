@@ -11,6 +11,9 @@ export function frameObject(camera: THREE.PerspectiveCamera, object: THREE.Objec
   const center = box.getCenter(new THREE.Vector3());
   const radius = size.length() / 2;
   if (radius === 0) return;
+  // A corrupt mesh (NaN vertices) yields a NaN box that passes isEmpty();
+  // framing to it would wedge the camera and controls on NaN forever.
+  if (!Number.isFinite(radius) || !Number.isFinite(center.x + center.y + center.z)) return;
 
   const fov = (camera.fov * Math.PI) / 180;
   const distance = (radius / Math.sin(fov / 2)) * 1.15;

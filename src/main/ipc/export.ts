@@ -1,11 +1,14 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron';
-import { createWriteStream, existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { BrowserWindow, app, dialog, ipcMain } from 'electron';
+import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import archiver from 'archiver';
 import { IPC } from '@shared/ipc-channels';
 import type { ExportResult } from '@shared/types';
 import { getOpenLibrary } from '@main/libraries/manager';
+import { collectModelFiles } from '@main/files/model-files';
+import { writeZip } from '@main/files/write-zip';
+import { scopedLogger } from '@main/logger';
+
+const log = scopedLogger('export');
 
 export function registerExportIpc(): void {
   ipcMain.handle(
@@ -16,8 +19,16 @@ export function registerExportIpc(): void {
       const col = lib.collections.getById(collectionId);
       if (!col) return { ok: false, error: 'Collection not found' };
 
-      const fileIds = lib.collections.listFileIds(collectionId);
-      if (fileIds.length === 0) return { ok: false, error: 'Collection is empty' };
+      const files = lib.collectionQuery.queryAll({ collectionId });
+      if (files.length === 0) return { ok: false, error: 'Collection is empty' };
+
+      let exportFiles;
+      try {
+        exportFiles = await collectModelFiles(lib.entry.mountPath, files);
+      } catch (error) {
+        log.warn('export dependency check failed', { libraryId, error: (error as Error).message });
+        return { ok: false, error: (error as Error).message };
+      }
 
       const senderWindow = BrowserWindow.fromWebContents(event.sender);
       const saveOpts = {
@@ -30,45 +41,27 @@ export function registerExportIpc(): void {
         : await dialog.showSaveDialog(saveOpts);
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       const destPath = result.filePath;
+      log.debug('export started', { libraryId, destPath });
 
       try {
-        await new Promise<void>((resolve, reject) => {
-          const output = createWriteStream(destPath);
-          const archive = archiver('zip', { zlib: { level: 6 } });
-          output.on('close', () => resolve());
-          output.on('error', reject);
-          archive.on('error', reject);
-          archive.pipe(output);
-
-          let added = 0;
-          for (const fid of fileIds) {
-            const file = lib.files.getById(fid);
-            if (!file) continue;
-            const abs = lib.resolver.toAbsolute(file.relPath);
-            if (!existsSync(abs)) continue;
-            archive.file(abs, { name: file.relPath });
-            added++;
-          }
-          if (added === 0) {
-            archive.abort();
-            output.destroy();
-            reject(new Error('No files exist on disk for this collection'));
-            return;
-          }
-          void archive.finalize();
-        });
+        await writeZip(destPath, exportFiles);
       } catch (err) {
+        log.error('export failed', { libraryId, destPath, error: (err as Error).message });
         return { ok: false, error: (err as Error).message };
       }
-      return { ok: true, canceled: false, path: destPath, fileCount: fileIds.length };
+      log.debug('ZIP export completed', { libraryId, destPath, models: files.length, count: exportFiles.length });
+      return { ok: true, canceled: false, path: destPath, fileCount: exportFiles.length };
     }
   );
 
   ipcMain.handle(
     IPC.exportContactSheet,
-    async (event, libraryId: string, fileIds: number[]): Promise<ExportResult> => {
+    async (event, libraryId: string, selection: number[] | { collectionId: number }): Promise<ExportResult> => {
       const lib = getOpenLibrary(libraryId);
       if (!lib) return { ok: false, error: `Library ${libraryId} not open` };
+      const fileIds = Array.isArray(selection)
+        ? selection
+        : lib.collectionQuery.queryAll({ collectionId: selection.collectionId }).map((file) => file.id);
       if (fileIds.length === 0) return { ok: false, error: 'No files selected' };
 
       const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -82,6 +75,7 @@ export function registerExportIpc(): void {
         : await dialog.showSaveDialog(saveOpts);
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       const destPath = result.filePath;
+      log.debug('export started', { libraryId, destPath });
 
       // Build a self-contained print-styled HTML grid of thumbs. The thumb
       // protocol (wh3d-thumb://) is registered as privileged so a hidden
@@ -98,11 +92,21 @@ export function registerExportIpc(): void {
         show: false,
         webPreferences: { contextIsolation: true, sandbox: true }
       });
+      // Load from a temp file rather than a data: URL — Chromium caps URL
+      // length around 2MB, which a sheet of a few thousand files exceeds.
+      const htmlPath = join(app.getPath('temp'), `meshflask-contact-sheet-${Date.now()}.html`);
       try {
-        await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-        // Give thumbnails one beat to lay out — printToPDF doesn't await image
-        // loads. 300ms is empirically enough for the cached sidecars.
-        await new Promise((r) => setTimeout(r, 300));
+        await writeFile(htmlPath, html, 'utf8');
+        await win.loadFile(htmlPath);
+        // printToPDF doesn't await image loads, so wait until every thumbnail
+        // has decoded. Capped so a missing thumb can't hang the export.
+        await Promise.race([
+          win.webContents.executeJavaScript(
+            'Promise.allSettled([...document.images].map((img) => img.decode()))',
+            true
+          ),
+          new Promise((r) => setTimeout(r, 10_000))
+        ]);
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
           pageSize: 'Letter',
@@ -110,12 +114,13 @@ export function registerExportIpc(): void {
         });
         await writeFile(destPath, pdf);
       } catch (err) {
+        log.error('export failed', { libraryId, destPath, error: (err as Error).message });
         return { ok: false, error: (err as Error).message };
       } finally {
         win.destroy();
+        await rm(htmlPath, { force: true });
       }
-      // Silence unused import; join may come in handy in extensions.
-      void join;
+      log.debug('PDF export completed', { libraryId, destPath, count: fileIds.length });
       return { ok: true, canceled: false, path: destPath, fileCount: fileIds.length };
     }
   );
@@ -172,7 +177,7 @@ function buildContactSheetHtml(
     </style>
   </head>
   <body>
-    <h1>meshFlask contact sheet — ${items.length} file${items.length === 1 ? '' : 's'}</h1>
+    <h1>meshFlask contact sheet (${items.length} file${items.length === 1 ? '' : 's'})</h1>
     <div class="grid">${cells}</div>
   </body>
 </html>`;
