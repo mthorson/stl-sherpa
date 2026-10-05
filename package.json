@@ -13,7 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:app": "npm run build && node scripts/run-app-test.cjs",
-    "test:packaged": "node scripts/test-packaged.cjs",
+    "test:packaged": "node --test scripts/process-group.test.cjs && node scripts/test-packaged.cjs",
     "test:full": "npm rebuild better-sqlite3 && { vitest run; rc=$?; npm run postinstall || exit $?; exit $rc; }",
     "test:integration": "npm rebuild better-sqlite3 && { STL_SHERPA_INTEGRATION=1 vitest run; rc=$?; npm run postinstall || exit $?; exit $rc; }",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",

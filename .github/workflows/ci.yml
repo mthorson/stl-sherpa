@@ -43,6 +43,7 @@ jobs:
           retention-days: 7
       - run: npm run build:icon && npm run dist:linux
       - name: Test packaged AppImage
+        timeout-minutes: 5
         run: xvfb-run -a npm run test:packaged
       - name: Retain packaged diagnostics
         if: always()

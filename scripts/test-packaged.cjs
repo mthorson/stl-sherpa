@@ -3,10 +3,10 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const net = require('node:net');
 const assert = require('node:assert/strict');
 const { writeSamples } = require('./sample-models.cjs');
+const { killProcessGroup } = require('./process-group.cjs');
 
 if (process.platform !== 'linux') throw new Error('This acceptance test targets the Linux AppImage');
 const executable = path.resolve(process.argv[2] || `release/stl-sherpa-${require('../package.json').version}.AppImage`);
@@ -24,7 +24,10 @@ const results = [];
 let child;
 let connection;
 let exit;
-const deadline = setTimeout(() => { child?.kill('SIGKILL'); console.error('Packaged test exceeded 3 minutes'); process.exit(1); }, 180000);
+const deadline = setTimeout(() => { killProcessGroup(child); console.error('Packaged test exceeded 3 minutes'); process.exit(1); }, 180000);
+// Software-rendered startup on hosted CPUs can stall the renderer for more
+// than 15 seconds. Keep a finite command budget within the overall watchdog.
+const commandTimeout = process.env.STL_SHERPA_SOFTWARE_RENDERING === '1' ? 45000 : 15000;
 async function waitFor(label, fn, timeout = 45000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -46,7 +49,7 @@ async function start() {
   delete env.ELECTRON_RENDERER_URL;
   const args = ['--appimage-extract-and-run', `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'];
   if (env.STL_SHERPA_SOFTWARE_RENDERING === '1') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
-  child = spawn(executable, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(executable, args, { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
   child.stderr.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
   exit = new Promise((resolve, reject) => { child.once('exit', (code) => resolve(code)); child.once('error', reject); });
@@ -76,7 +79,8 @@ async function start() {
   });
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++sequence;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`DevTools timeout: ${method}`)); }, 15000);
+    const operation = params.expression ? `${method}: ${params.expression.slice(0, 160)}` : method;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`DevTools timeout: ${operation}`)); }, commandTimeout);
     pending.set(id, { resolve, reject, timer });
     connection.send(JSON.stringify({ id, method, params }));
   });
@@ -143,7 +147,7 @@ async function close(api) {
   console.error(error);
   fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ passed: false, results, error: String(error) }, null, 2));
   connection?.close();
-  child?.kill('SIGTERM');
-  if (child) await Promise.race([exit, delay(5000).then(() => child?.kill('SIGKILL'))]);
+  killProcessGroup(child);
+  if (child) await Promise.race([exit.catch(() => {}), delay(5000)]);
   process.exitCode = 1;
 }).finally(() => clearTimeout(deadline));
