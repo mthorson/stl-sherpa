@@ -17,6 +17,12 @@ import { DEFAULT_LOG_LEVEL, initLogger, scopedLogger, setLogLevel } from '@main/
 import { buildMenu, subscribeMenuToUndoQueue } from '@main/menu';
 import * as prefsStore from '@main/preferences/store';
 
+// Keep the established profile (including renderer localStorage) across the
+// product rename. Respect explicit profiles supplied by desktop tests/tools.
+if (app.getPath('userData') === join(app.getPath('appData'), 'stl-sherpa')) {
+  app.setPath('userData', join(app.getPath('appData'), 'meshFlask'));
+}
+
 const isDev = !app.isPackaged;
 const log = scopedLogger('app');
 let mainWindow: BrowserWindow | null = null;
@@ -34,7 +40,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     backgroundColor: '#1a1b1e',
-    title: 'meshFlask',
+    title: 'stl-sherpa',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

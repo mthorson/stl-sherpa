@@ -9,7 +9,7 @@ describe('hashFileContent', () => {
   let dir: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'meshflask-hash-'));
+    dir = await mkdtemp(join(tmpdir(), 'stl-sherpa-hash-'));
   });
 
   afterAll(async () => {

@@ -5,9 +5,9 @@ import { canRun as sqliteLoadable } from '@main/db/test-utils';
  * they are slower and flakier than the in-memory unit tests. They stay opt-in:
  * default `npm test` / `npm run test:full` skips them. Enable with
  *
- *   npm run test:integration            (sets MESHFLASK_INTEGRATION=1)
+ *   npm run test:integration            (sets STL_SHERPA_INTEGRATION=1)
  *
- * or by exporting MESHFLASK_INTEGRATION=1 before any vitest invocation. (vitest
+ * or by exporting STL_SHERPA_INTEGRATION=1 before any vitest invocation. (vitest
  * runs specs in worker threads with their own argv, so an env var — which it
  * propagates to workers — is the reliable switch; a CLI flag would not reach
  * here.)
@@ -17,7 +17,7 @@ import { canRun as sqliteLoadable } from '@main/db/test-utils';
  * than erroring.
  */
 function flagRequested(): boolean {
-  const v = process.env.MESHFLASK_INTEGRATION;
+  const v = process.env.STL_SHERPA_INTEGRATION;
   return v === '1' || v === 'true';
 }
 

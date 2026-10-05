@@ -8,7 +8,7 @@ describe('model sidecar containment', () => {
   const roots: string[] = [];
   afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
   function setup() {
-    const root = mkdtempSync(join(tmpdir(), 'meshflask-resource-'));
+    const root = mkdtempSync(join(tmpdir(), 'stl-sherpa-resource-'));
     roots.push(root);
     mkdirSync(join(root, 'models'));
     mkdirSync(join(root, 'textures'));

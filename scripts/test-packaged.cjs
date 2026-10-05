@@ -9,9 +9,9 @@ const assert = require('node:assert/strict');
 const { writeSamples } = require('./sample-models.cjs');
 
 if (process.platform !== 'linux') throw new Error('This acceptance test targets the Linux AppImage');
-const executable = path.resolve(process.argv[2] || `release/meshFlask-${require('../package.json').version}.AppImage`);
+const executable = path.resolve(process.argv[2] || `release/stl-sherpa-${require('../package.json').version}.AppImage`);
 if (!fs.existsSync(executable)) throw new Error(`Build the AppImage first: ${executable}`);
-const output = path.resolve(process.env.MESHFLASK_SMOKE_OUTPUT || 'test-results/packaged');
+const output = path.resolve(process.env.STL_SHERPA_SMOKE_OUTPUT || 'test-results/packaged');
 fs.mkdirSync(output, { recursive: true });
 const root = fs.mkdtempSync(path.join(output, 'run-'));
 const config = path.join(root, 'config');
@@ -45,7 +45,7 @@ async function start() {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_RENDERER_URL;
   const args = ['--appimage-extract-and-run', `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'];
-  if (env.MESHFLASK_SOFTWARE_RENDERING === '1') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
+  if (env.STL_SHERPA_SOFTWARE_RENDERING === '1') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
   child = spawn(executable, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
   child.stderr.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
@@ -85,10 +85,12 @@ async function start() {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  await waitFor('preload', () => evaluate('typeof window.meshFlask === "object"'));
+  await waitFor('preload', () => evaluate('typeof window.stlSherpa === "object"'));
+  assert.equal(await evaluate('document.title'), 'stl-sherpa');
+  assert.equal(await evaluate("document.body.innerText.includes('meshFlask')"), false);
   assert.equal(await evaluate('typeof window.require'), 'undefined');
   assert.ok(fs.existsSync(path.join(profile, 'logs', 'main.log')), 'App must use the isolated XDG profile');
-  return { send, evaluate, ipc: (method, ...args) => evaluate(`window.meshFlask[${JSON.stringify(method)}](...${JSON.stringify(args)})`) };
+  return { send, evaluate, ipc: (method, ...args) => evaluate(`window.stlSherpa[${JSON.stringify(method)}](...${JSON.stringify(args)})`) };
 }
 async function close(api) {
   void api.evaluate('window.close()').catch(() => {});
@@ -102,6 +104,7 @@ async function close(api) {
   const png = await require('sharp')({ create: { width: 64, height: 64, channels: 4, background: '#ed7542' } }).png().toBuffer();
   writeSamples(models, png);
   let api = await start();
+  assert.equal((await api.ipc('getPreferences')).logLevel, 'debug', 'Existing meshFlask profile must be retained');
   check('AppImage launches with isolated profile and sandboxed renderer');
   const added = await api.ipc('addLibrary', { mountPath: models });
   assert.equal(added.ok, true, added.error);
@@ -115,12 +118,14 @@ async function close(api) {
   const file = files.find((item) => item.ext === 'gltf');
   await api.ipc('setFileNotes', libraryId, file.id, 'Persisted by packaged acceptance');
   await api.ipc('patchPreferences', { logLevel: 'warn' });
+  await api.evaluate("localStorage.setItem('rename-acceptance', 'saved-ui-state')");
   await close(api);
   check('main-window close shuts down the packaged app and workers');
   api = await start();
   assert.ok((await api.ipc('listLibraries')).some((library) => library.id === libraryId));
   assert.equal((await api.ipc('queryFiles', { libraryId })).find((row) => row.id === file.id).notes, 'Persisted by packaged acceptance');
   assert.equal((await api.ipc('getPreferences')).logLevel, 'warn');
+  assert.equal(await api.evaluate("localStorage.getItem('rename-acceptance')"), 'saved-ui-state');
   check('library, annotations, and preferences survive a packaged-app restart');
   await api.ipc('patchPreferences', { logLevel: 'debug' });
   const logPath = path.join(profile, 'logs', 'main.log');

@@ -12,7 +12,7 @@ export interface GeometryAnalysis {
    * totalling so a mirrored part (negative-determinant transform, legal in
    * glTF) can't cancel its twin. Vertices are transformed to world space so
    * multi-mesh objects (typical 3MFs with translated parts) sum correctly;
-   * units match the geometry input (mm for STL/3MF in the meshFlask
+   * units match the geometry input (mm for STL/3MF in the stl-sherpa
    * convention). Null when no usable mesh exists or the scene is over the
    * triangle cap.
    */

@@ -94,7 +94,7 @@ export function registerExportIpc(): void {
       });
       // Load from a temp file rather than a data: URL — Chromium caps URL
       // length around 2MB, which a sheet of a few thousand files exceeds.
-      const htmlPath = join(app.getPath('temp'), `meshflask-contact-sheet-${Date.now()}.html`);
+      const htmlPath = join(app.getPath('temp'), `stl-sherpa-contact-sheet-${Date.now()}.html`);
       try {
         await writeFile(htmlPath, html, 'utf8');
         await win.loadFile(htmlPath);
@@ -177,7 +177,7 @@ function buildContactSheetHtml(
     </style>
   </head>
   <body>
-    <h1>meshFlask contact sheet (${items.length} file${items.length === 1 ? '' : 's'})</h1>
+    <h1>stl-sherpa contact sheet (${items.length} file${items.length === 1 ? '' : 's'})</h1>
     <div class="grid">${cells}</div>
   </body>
 </html>`;

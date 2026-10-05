@@ -15,7 +15,7 @@ import { modelResourceUrl } from '@shared/model-source';
 
 const log = scopedLogger('thumb-worker');
 
-const workerApi = (window as unknown as { meshFlaskWorker: ThumbWorkerApi }).meshFlaskWorker;
+const workerApi = (window as unknown as { stlSherpaWorker: ThumbWorkerApi }).stlSherpaWorker;
 
 let renderer: THREE.WebGLRenderer | null = null;
 // Scene + lighting rig persist across jobs: rebuilding the rig per thumbnail

@@ -7,7 +7,7 @@ function binaryStl(scale = 10) {
   const vertices = [[0, 0, 0], [scale, 0, 0], [0, scale, 0], [0, 0, scale]];
   const faces = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
   const bytes = Buffer.alloc(84 + faces.length * 50);
-  bytes.write('meshFlask smoke tetrahedron');
+  bytes.write('stl-sherpa smoke tetrahedron');
   bytes.writeUInt32LE(faces.length, 80);
   faces.forEach((face, i) => {
     const [a, b, c] = face.map((id) => vertices[id]);
@@ -73,7 +73,7 @@ function writeSamples(root, png) {
 
 function largeStl(count) {
   const bytes = Buffer.alloc(84 + count * 50);
-  bytes.write('Generated meshFlask stress sample');
+  bytes.write('Generated stl-sherpa stress sample');
   bytes.writeUInt32LE(count, 80);
   const tetra = binaryStl(1);
   for (let i = 0; i < count; i++) {

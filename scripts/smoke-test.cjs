@@ -7,9 +7,9 @@ const os = require('node:os');
 const { unzipSync } = require('fflate');
 const { binaryStl, threeMf, writeSamples, largeStl, multipart3mf } = require('./sample-models.cjs');
 
-const outputRoot = process.env.MESHFLASK_SMOKE_OUTPUT ? path.resolve(process.env.MESHFLASK_SMOKE_OUTPUT) : os.tmpdir();
+const outputRoot = process.env.STL_SHERPA_SMOKE_OUTPUT ? path.resolve(process.env.STL_SHERPA_SMOKE_OUTPUT) : os.tmpdir();
 fs.mkdirSync(outputRoot, { recursive: true });
-const temp = fs.mkdtempSync(path.join(outputRoot, 'meshflask-app-test-'));
+const temp = fs.mkdtempSync(path.join(outputRoot, 'stl-sherpa-app-test-'));
 const profile = path.join(temp, 'profile');
 const models = path.join(temp, 'models');
 fs.mkdirSync(profile);
@@ -46,7 +46,7 @@ async function fail(error) {
   app.exit(1);
 }
 function ipc(method, ...args) {
-  return window.webContents.executeJavaScript(`window.meshFlask[${JSON.stringify(method)}](...${JSON.stringify(args)})`);
+  return window.webContents.executeJavaScript(`window.stlSherpa[${JSON.stringify(method)}](...${JSON.stringify(args)})`);
 }
 function viewerLoadedSince(index, fileId) {
   return entries.slice(index).some((entry) => entry.scope === 'viewer' && entry.data[0] === 'model loaded' && entry.data[1]?.fileId === fileId);
@@ -67,7 +67,7 @@ app.on('will-quit', () => {
   check(process.platform === 'darwin' ? 'application quits cleanly with hidden workers present' : 'closing the main window exits with hidden workers present');
   fs.writeFileSync(path.join(temp, 'result.json'), JSON.stringify({ passed, results }, null, 2));
   console.log(`APP TEST COMPLETE: ${results.length} checks. Artifacts: ${temp}`);
-  if (process.env.MESHFLASK_KEEP_SMOKE !== '1' && !process.env.MESHFLASK_SMOKE_OUTPUT) fs.rmSync(temp, { recursive: true, force: true });
+  if (process.env.STL_SHERPA_KEEP_SMOKE !== '1' && !process.env.STL_SHERPA_SMOKE_OUTPUT) fs.rmSync(temp, { recursive: true, force: true });
 });
 
 require('../out/main/index.js');

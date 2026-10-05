@@ -119,7 +119,7 @@ describe.runIf(runIntegration)('scanner integration: real temp library', () => {
   let resolver: PathResolver;
 
   beforeEach(() => {
-    harness = createLibraryHarness('meshflask-scan-it-');
+    harness = createLibraryHarness('stl-sherpa-scan-it-');
     db = freshDb();
     files = createFilesRepo(db, 'integration-library');
     resolver = new PathResolver(harness.root);

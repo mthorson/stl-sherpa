@@ -4,7 +4,7 @@ interface Props {
 
 /**
  * Isometric storage cube — three visible faces, a luminous top, indigo
- * wireframe. Reads as both "3D model" and "meshFlask box" at small sizes.
+ * wireframe. Reads as both "3D model" and "stl-sherpa box" at small sizes.
  * Pure SVG so it stays crisp at any resolution and inherits the surrounding
  * dark/light theme without extra plumbing.
  */
@@ -16,7 +16,7 @@ export function Logo({ size = 24 }: Props) {
       viewBox="0 0 32 32"
       xmlns="http://www.w3.org/2000/svg"
       role="img"
-      aria-label="meshFlask"
+      aria-label="stl-sherpa"
       style={{ display: 'block', flexShrink: 0 }}
     >
       <defs>

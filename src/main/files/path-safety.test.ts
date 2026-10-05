@@ -12,8 +12,8 @@ describe('moveOnDisk library containment', () => {
   });
 
   it('rejects a destination whose parent symlink escapes the library', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'meshflask-safe-root-'));
-    const outside = mkdtempSync(join(tmpdir(), 'meshflask-safe-outside-'));
+    const root = mkdtempSync(join(tmpdir(), 'stl-sherpa-safe-root-'));
+    const outside = mkdtempSync(join(tmpdir(), 'stl-sherpa-safe-outside-'));
     cleanup.push(root, outside);
     const source = join(root, 'model.stl');
     const escapedTarget = join(root, 'linked', 'model.stl');

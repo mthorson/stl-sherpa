@@ -12,7 +12,7 @@ vi.mock('electron', async () => {
   const { mkdtempSync: mkdtemp } = await import('node:fs');
   const { tmpdir: osTmpdir } = await import('node:os');
   const { join: pjoin } = await import('node:path');
-  const userData = mkdtemp(pjoin(osTmpdir(), 'meshflask-userdata-'));
+  const userData = mkdtemp(pjoin(osTmpdir(), 'stl-sherpa-userdata-'));
   return {
     app: { getPath: () => userData },
     BrowserWindow: { getAllWindows: () => [] }
@@ -36,7 +36,7 @@ import * as manager from './manager';
 import * as registry from './registry';
 
 function makeLibraryDir(): string {
-  return mkdtempSync(join(tmpdir(), 'meshflask-lib-'));
+  return mkdtempSync(join(tmpdir(), 'stl-sherpa-lib-'));
 }
 
 describe('manager.relocateLibrary', () => {
@@ -78,7 +78,7 @@ describe('manager.relocateLibrary', () => {
     expect(manager.getOpenLibrary(lib.id)).toBeDefined();
   });
 
-  it('rejects a folder that is not a meshFlask library', async () => {
+  it('rejects a folder that is not a stl-sherpa library', async () => {
     const dir = makeLibraryDir();
     const lib = await addLibraryAt(dir, 'Minis');
     const empty = makeLibraryDir();
@@ -111,7 +111,7 @@ describe('manager.relocateLibrary', () => {
   it('rejects a missing folder', async () => {
     const dir = makeLibraryDir();
     const lib = await addLibraryAt(dir, 'Minis');
-    const gone = join(tmpdir(), 'meshflask-definitely-missing');
+    const gone = join(tmpdir(), 'stl-sherpa-definitely-missing');
     expect(existsSync(gone)).toBe(false);
 
     const result = await manager.relocateLibrary({ id: lib.id, newMountPath: gone });

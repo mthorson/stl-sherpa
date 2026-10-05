@@ -8,4 +8,4 @@ const api: ThumbWorkerApi = {
   ready: () => ipcRenderer.send(THUMB_WORKER_CHANNEL.ready),
   result: (result) => ipcRenderer.send(THUMB_WORKER_CHANNEL.result, result)
 };
-contextBridge.exposeInMainWorld('meshFlaskWorker', api);
+contextBridge.exposeInMainWorld('stlSherpaWorker', api);

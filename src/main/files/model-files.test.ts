@@ -9,7 +9,7 @@ import { writeZip } from './write-zip';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 async function setup(uri = '../textures/a%20b.png') {
-  const root = await mkdtemp(join(tmpdir(), 'meshflask-export-'));
+  const root = await mkdtemp(join(tmpdir(), 'stl-sherpa-export-'));
   roots.push(root);
   await mkdir(join(root, 'models'));
   await mkdir(join(root, 'textures'));

@@ -177,7 +177,7 @@ export function PreferencesModal({ opened, onClose, libraryId }: Props) {
           target="_blank"
           rel="noreferrer"
         >
-          Support meshFlask — Buy me a coffee
+          Support stl-sherpa — Buy me a coffee
         </Button>
       </Group>
     </Modal>
@@ -451,7 +451,7 @@ function WatcherSection({ prefs }: { prefs: PreferencesFile }) {
   return (
     <Stack gap="sm">
       <Text size="sm" c="dimmed">
-        How often meshFlask checks libraries on network drives for new or changed files. Network
+        How often stl-sherpa checks libraries on network drives for new or changed files. Network
         drives don't send change notifications, so we check on a timer. Shorter intervals pick up
         changes faster but use more network traffic.
       </Text>

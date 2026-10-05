@@ -1,8 +1,8 @@
-# meshFlask
+# stl-sherpa
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy_Me_a_Coffee-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/thorson)
 
-![meshFlask screenshot](docs/screenshot.png)
+![stl-sherpa screenshot](docs/screenshot.png)
 
 A desktop browser and organizer for 3D model files.
 Right now it's aimed squarely at 3D printing.
@@ -97,6 +97,12 @@ Apple Developer credentials are available (the release workflow reads them
 from repo secrets; local builds need the identity in your keychain).
 Windows builds are unsigned, so SmartScreen will warn users on first
 launch; signing those needs an Authenticode cert this repo doesn't set up.
+
+The app and installers are named **stl-sherpa** (formerly meshFlask).
+The application ID remains `com.meshFlask.app` for installer continuity.
+Existing `meshFlask` profile folders, `.meshFlask.db` catalogs, and
+`.meshFlask/` caches retain their names so upgrades preserve libraries,
+preferences, annotations, and saved UI state. No manual data migration is needed.
 
 The app icon is generated from `build/icon.svg` (matches the in-app logo).
 `npm run build:icon` re-renders the PNG at 1024×1024 via `sharp`;
@@ -288,10 +294,10 @@ resources, traversal, and escaping symlinks. The workload includes a
 1,003-file embedded-preview library, a 100,000-triangle STL, sustained
 mesh rendering, multipart 3MFs, and cancellation/restart of cache rebuilds.
 Your registered libraries
-and preferences are untouched. Set `MESHFLASK_KEEP_SMOKE=1` to retain the
+and preferences are untouched. Set `STL_SHERPA_KEEP_SMOKE=1` to retain the
 sample libraries, exports, logs, screenshot, and JSON results in the
 temporary directory printed by the test. Failed runs retain artifacts
-automatically. `MESHFLASK_SMOKE_OUTPUT=test-results/app` places retained
+automatically. `STL_SHERPA_SMOKE_OUTPUT=test-results/app` places retained
 artifacts in a predictable directory for CI. The unit/filesystem suites
 generate their fixtures, so a fresh checkout does not need the old private
 `manticore.3mf` files. These generated samples do not replace acceptance
@@ -307,7 +313,7 @@ AppImage path with `npm run test:packaged -- /path/to/app.AppImage`.
 CI runs filesystem integration tests, the Linux desktop test under Xvfb,
 and AppImage acceptance. Separate macOS and Windows jobs exercise the
 desktop test. All desktop jobs retain diagnostics, including failure
-screenshots. CI sets `MESHFLASK_SOFTWARE_RENDERING=1` to use SwiftShader
+screenshots. CI sets `STL_SHERPA_SOFTWARE_RENDERING=1` to use SwiftShader
 without requiring a hardware GPU; the production app keeps its normal
 graphics settings. Local simulated missing-root recovery checks preserve IDs
 and notes across a failed scan; physical SMB/NFS outages still require a

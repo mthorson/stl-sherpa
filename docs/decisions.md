@@ -19,6 +19,25 @@ a settled question.
 
 ---
 
+## 2026-10-05: Rename the product while retaining its storage identity
+
+**Context.** The repository is stl-sherpa, but the desktop app, installers,
+exports, and development tools still used the meshFlask name. Changing the
+Electron package name also changes its default profile directory.
+
+**Decision.** Use stl-sherpa for product branding and package/artifact names,
+`stlSherpa` for the preload bridge, and `STL_SHERPA_` for test environment
+variables. Retain `com.meshFlask.app`, the meshFlask profile directory, and
+existing library database/cache/backup paths. Explicit test profiles still
+take precedence over the compatibility profile.
+
+**Consequences.** Existing catalogs, preferences, and renderer state remain
+available without moving user data. The legacy names in storage and installer
+identity are intentional. Packaged acceptance checks the new title and bridge,
+loads preferences from the old profile path, and verifies restart persistence.
+
+---
+
 ## 2026-10-02: Share model resource checks between previews, workers, and exports
 
 **Context.** The live viewer checked glTF sidecars through a custom protocol,

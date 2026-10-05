@@ -9,7 +9,7 @@ import { ScannerService } from './service';
 
 describe.runIf(canRun)('library availability recovery', () => {
   it('retains indexed files through a missing-root scan and reconnects with annotations intact', async () => {
-    const temp = mkdtempSync(join(tmpdir(), 'meshflask-recovery-'));
+    const temp = mkdtempSync(join(tmpdir(), 'stl-sherpa-recovery-'));
     const root = join(temp, 'mounted');
     mkdirSync(root);
     writeFileSync(join(root, 'model.stl'), 'solid test\nendsolid test\n');

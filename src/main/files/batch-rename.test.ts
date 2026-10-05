@@ -12,7 +12,7 @@ describe.runIf(canRun)('batch rename disk/database consistency', () => {
   const cleanup: Array<() => void> = [];
   afterEach(() => cleanup.splice(0).forEach((fn) => fn()));
   function setup() {
-    const root = mkdtempSync(join(tmpdir(), 'meshflask-batch-'));
+    const root = mkdtempSync(join(tmpdir(), 'stl-sherpa-batch-'));
     const db = freshDb();
     cleanup.push(() => { db.close(); rmSync(root, { recursive: true, force: true }); });
     const files = createFilesRepo(db, 'lib');

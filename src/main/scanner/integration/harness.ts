@@ -50,7 +50,7 @@ function ensureParent(absPath: string): void {
 function buildStl(triangles: number, seed: number): Buffer {
   const count = Math.max(1, triangles);
   const buf = Buffer.alloc(80 + 4 + count * 50);
-  buf.write('meshFlask integration test STL', 0, 'ascii');
+  buf.write('stl-sherpa integration test STL', 0, 'ascii');
   buf.writeUInt32LE(count, 80);
   let off = 84;
   for (let i = 0; i < count; i++) {
@@ -116,7 +116,7 @@ function build3mf(title: string): Uint8Array {
   });
 }
 
-export function createLibraryHarness(prefix = 'meshflask-it-'): LibraryHarness {
+export function createLibraryHarness(prefix = 'stl-sherpa-it-'): LibraryHarness {
   const root = mkdtempSync(join(tmpdir(), prefix));
 
   return {

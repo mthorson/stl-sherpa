@@ -1537,7 +1537,7 @@ export function App() {
       <Stack align="center" gap="xs">
         <Text c="dimmed">No libraries yet.</Text>
         <Text size="sm" c="dimmed">
-          Click "Add library" in the sidebar to point meshFlask at a folder of 3D files.
+          Click "Add library" in the sidebar to point stl-sherpa at a folder of 3D files.
         </Text>
       </Stack>
     </Center>
@@ -1631,7 +1631,7 @@ export function App() {
           <Group h={44} px="md" gap="md" wrap="nowrap">
             <Group gap={8} wrap="nowrap" style={{ flexShrink: 0 }}>
               <Logo size={22} />
-              <Text fw={600}>meshFlask</Text>
+              <Text fw={600}>stl-sherpa</Text>
             </Group>
             <Divider orientation="vertical" />
             <Breadcrumbs
@@ -1666,7 +1666,7 @@ export function App() {
               comboboxProps={{ withinPortal: true }}
               clearable
             />
-            <Tooltip label="Support meshFlask">
+            <Tooltip label="Support stl-sherpa">
               <ActionIcon
                 variant="subtle"
                 component="a"
@@ -2062,14 +2062,14 @@ function OfflineState({ library, onLocate }: { library: LibrarySummary; onLocate
       <Stack align="center" gap={4}>
         <Text fw={600}>{library.name} is offline</Text>
         <Text size="sm" c="dimmed">
-          meshFlask can't find this library's folder:
+          stl-sherpa can't find this library's folder:
         </Text>
         <Text size="sm" c="dimmed" style={{ fontFamily: 'monospace' }}>
           {library.mountPath}
         </Text>
         <Text size="xs" c="dimmed" mt="md">
           If the folder lives on a drive or network share, reconnect it and restart the app.
-          Moved or renamed the folder? Point meshFlask at its new home:
+          Moved or renamed the folder? Point stl-sherpa at its new home:
         </Text>
         <Button size="xs" variant="light" mt={4} onClick={onLocate}>
           Locate folder…

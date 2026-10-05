@@ -73,7 +73,7 @@ describe('walkLibrary cancellation', () => {
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'meshflask-walk-'));
+    root = mkdtempSync(join(tmpdir(), 'stl-sherpa-walk-'));
     const sub = join(root, 'parts');
     mkdirSync(sub);
     for (let i = 0; i < 10; i++) {

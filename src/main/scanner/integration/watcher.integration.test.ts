@@ -37,7 +37,7 @@ describe.runIf(runIntegration)('watcher integration: live filesystem events', ()
   let changes: number;
 
   beforeEach(() => {
-    harness = createLibraryHarness('meshflask-watch-it-');
+    harness = createLibraryHarness('stl-sherpa-watch-it-');
     db = freshDb();
     files = createFilesRepo(db, 'integration-library');
     changes = 0;

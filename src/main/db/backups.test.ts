@@ -10,7 +10,7 @@ const { BACKUPS_DIR, FILE_PREFIX, FILE_SUFFIX } = __test;
 let root: string;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'meshflask-backups-'));
+  root = mkdtempSync(join(tmpdir(), 'stl-sherpa-backups-'));
 });
 
 afterEach(() => {

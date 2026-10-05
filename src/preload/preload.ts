@@ -218,4 +218,4 @@ const api: IpcApi = {
   }
 };
 
-contextBridge.exposeInMainWorld('meshFlask', api);
+contextBridge.exposeInMainWorld('stlSherpa', api);

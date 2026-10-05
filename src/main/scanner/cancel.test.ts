@@ -12,7 +12,7 @@ describe.runIf(canRun)('ScannerService cancellation', () => {
 
   beforeEach(() => {
     // A small synthetic library: a handful of .stl files in a subfolder.
-    root = mkdtempSync(join(tmpdir(), 'meshflask-cancel-'));
+    root = mkdtempSync(join(tmpdir(), 'stl-sherpa-cancel-'));
     const sub = join(root, 'parts');
     mkdirSync(sub);
     for (let i = 0; i < 8; i++) {

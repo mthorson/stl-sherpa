@@ -39,8 +39,8 @@ ${metadataXml}
 
 describe('extractStlMetadata', () => {
   it('reads a binary STL 80-byte header banner', () => {
-    const out = extractStlMetadata(binaryStl('Exported by MeshFlask Test'));
-    expect(out).toEqual({ stlHeader: 'Exported by MeshFlask Test' });
+    const out = extractStlMetadata(binaryStl('Exported by stl-sherpa Test'));
+    expect(out).toEqual({ stlHeader: 'Exported by stl-sherpa Test' });
   });
 
   it('strips zero padding and control bytes from a binary header', () => {
@@ -70,7 +70,7 @@ describe('extract3mfMetadata', () => {
       '<metadata name="Designer">Jane Maker</metadata>',
       '<metadata name="LicenseTerms">CC BY-NC 4.0</metadata>',
       '<metadata name="Copyright">2025 Jane Maker</metadata>',
-      '<metadata name="Application">MeshFlask 1.0</metadata>'
+      '<metadata name="Application">stl-sherpa 1.0</metadata>'
     ].join('\n');
     const out = extract3mfMetadata(threeMf(xml));
     expect(out).toEqual({
@@ -78,7 +78,7 @@ describe('extract3mfMetadata', () => {
       author: 'Jane Maker',
       license: 'CC BY-NC 4.0',
       copyright: '2025 Jane Maker',
-      application: 'MeshFlask 1.0'
+      application: 'stl-sherpa 1.0'
     });
   });
 

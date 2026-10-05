@@ -16,7 +16,7 @@ import * as store from './store';
 
 describe('preferences store', () => {
   beforeEach(() => {
-    mockState.userData = mkdtempSync(join(tmpdir(), 'meshflask-prefs-'));
+    mockState.userData = mkdtempSync(join(tmpdir(), 'stl-sherpa-prefs-'));
   });
 
   afterEach(() => {

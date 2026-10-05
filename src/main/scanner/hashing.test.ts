@@ -18,7 +18,7 @@ import { ScannerService } from './service';
 
 describe.runIf(canRun)('incremental content hashing', () => {
   it('hashes watcher changes arriving during an existing pass, and rehashes later edits', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'meshflask-hashes-'));
+    const root = mkdtempSync(join(tmpdir(), 'stl-sherpa-hashes-'));
     const db = freshDb();
     const files = createFilesRepo(db, 'lib');
     const scanner = new ScannerService();

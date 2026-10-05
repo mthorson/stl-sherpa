@@ -1,3 +1,3 @@
 import type { IpcApi } from '@shared/types';
 
-export const ipc: IpcApi = window.meshFlask;
+export const ipc: IpcApi = window.stlSherpa;

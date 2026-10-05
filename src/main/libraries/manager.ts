@@ -258,7 +258,7 @@ export async function relocateLibrary(args: {
   if (!existsSync(join(newMountPath, DB_FILENAME))) {
     return {
       ok: false,
-      error: `That folder isn't a meshFlask library (no ${DB_FILENAME} inside). Pick the folder that used to live at ${entry.mountPath}.`
+      error: `That folder isn't a stl-sherpa library (no ${DB_FILENAME} inside). Pick the folder that used to live at ${entry.mountPath}.`
     };
   }
 
