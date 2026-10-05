@@ -315,6 +315,9 @@ and AppImage acceptance. Separate macOS and Windows jobs exercise the
 desktop test. All desktop jobs retain diagnostics, including failure
 screenshots. CI sets `STL_SHERPA_SOFTWARE_RENDERING=1` to use SwiftShader
 without requiring a hardware GPU; the production app keeps its normal
-graphics settings. Local simulated missing-root recovery checks preserve IDs
+graphics settings. The Linux job uses Ubuntu 24.04 and allows unprivileged
+user namespaces on its disposable runner so Chromium can sandbox the app
+and extracted AppImage; it does not pass `--no-sandbox`.
+Local simulated missing-root recovery checks preserve IDs
 and notes across a failed scan; physical SMB/NFS outages still require a
 disposable writable network library.

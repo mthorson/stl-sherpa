@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       STL_SHERPA_SOFTWARE_RENDERING: '1'
@@ -24,6 +24,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:integration
+      - name: Enable Chromium user-namespace sandbox
+        # Ubuntu's AppArmor restriction blocks Electron and extracted AppImages.
+        # This applies only to the disposable hosted runner; keep Chromium's
+        # renderer/worker sandbox enabled during both acceptance tests.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test the Electron app
         run: xvfb-run -a npm run test:app
         env:
