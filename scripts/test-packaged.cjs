@@ -1,4 +1,4 @@
-// Drive the actual Linux AppImage over a loopback-only DevTools connection.
+// Drive an installed app or Linux AppImage over a loopback-only DevTools connection.
 // No test hooks or alternate entry point are included in the packaged app.
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -8,9 +8,9 @@ const assert = require('node:assert/strict');
 const { writeSamples } = require('./sample-models.cjs');
 const { killProcessGroup } = require('./process-group.cjs');
 
-if (process.platform !== 'linux') throw new Error('This acceptance test targets the Linux AppImage');
-const executable = path.resolve(process.argv[2] || `release/stl-sherpa-${require('../package.json').version}.AppImage`);
+const executable = path.resolve(process.argv[2] || process.env.STL_SHERPA_EXECUTABLE || `release/stl-sherpa-${require('../package.json').version}.AppImage`);
 if (!fs.existsSync(executable)) throw new Error(`Build the AppImage first: ${executable}`);
+const upgradeFrom = process.env.STL_SHERPA_UPGRADE_FROM && path.resolve(process.env.STL_SHERPA_UPGRADE_FROM);
 const output = path.resolve(process.env.STL_SHERPA_SMOKE_OUTPUT || 'test-results/packaged');
 fs.mkdirSync(output, { recursive: true });
 const root = fs.mkdtempSync(path.join(output, 'run-'));
@@ -39,7 +39,9 @@ async function waitFor(label, fn, timeout = 45000) {
   throw new Error(`Timed out: ${label}`);
 }
 function check(label) { results.push(label); console.log(`PACKAGED PASS: ${label}`); }
-async function start() {
+async function start(launchExecutable = executable) {
+  const legacy = launchExecutable === upgradeFrom;
+  const bridge = legacy ? "meshFlask" : "stlSherpa";
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
@@ -47,9 +49,13 @@ async function start() {
   const env = { ...process.env, XDG_CONFIG_HOME: config, XDG_CACHE_HOME: path.join(root, 'cache') };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_RENDERER_URL;
-  const args = ['--appimage-extract-and-run', `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'];
+  const args = [ `--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1'];
+  if (launchExecutable.endsWith('.AppImage')) args.unshift('--appimage-extract-and-run');
+  // Linux exercises the real legacy XDG profile location. Other platforms use
+  // Chromium's explicit profile switch to avoid the runner's actual app data.
+  if (process.platform !== 'linux') args.push(`--user-data-dir=${profile}`);
   if (env.STL_SHERPA_SOFTWARE_RENDERING === '1') args.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
-  child = spawn(executable, args, { env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  child = spawn(launchExecutable, args, { env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
   child.stderr.on('data', (bytes) => fs.appendFileSync(path.join(root, 'process.log'), bytes));
   exit = new Promise((resolve, reject) => { child.once('exit', (code) => resolve(code)); child.once('error', reject); });
@@ -89,17 +95,22 @@ async function start() {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
-  await waitFor('preload', () => evaluate('typeof window.stlSherpa === "object"'));
-  assert.equal(await evaluate('document.title'), 'stl-sherpa');
-  assert.equal(await evaluate("document.body.innerText.includes('meshFlask')"), false);
+  await waitFor('preload', () => evaluate(`typeof window.${bridge} === "object"`));
+  assert.equal(await evaluate('document.title'), legacy ? 'meshFlask' : 'stl-sherpa');
+  if (!legacy) assert.equal(await evaluate("document.body.innerText.includes('meshFlask')"), false);
   assert.equal(await evaluate('typeof window.require'), 'undefined');
   assert.ok(fs.existsSync(path.join(profile, 'logs', 'main.log')), 'App must use the isolated XDG profile');
-  return { send, evaluate, ipc: (method, ...args) => evaluate(`window.stlSherpa[${JSON.stringify(method)}](...${JSON.stringify(args)})`) };
+  return { send, evaluate, bridge, ipc: (method, ...args) => evaluate(`window.${bridge}[${JSON.stringify(method)}](...${JSON.stringify(args)})`) };
 }
 async function close(api) {
   void api.evaluate('window.close()').catch(() => {});
+  if (process.platform === 'darwin') {
+    // Closing the last window intentionally keeps macOS applications alive.
+    await delay(500);
+    killProcessGroup(child, 'SIGTERM');
+  }
   const code = await Promise.race([exit, delay(15000).then(() => { throw new Error('Packaged app did not quit after main window closed'); })]);
-  assert.equal(code, 0);
+  if (process.platform !== 'darwin') assert.equal(code, 0);
   connection.close();
   child = null;
 }
@@ -107,9 +118,9 @@ async function close(api) {
 (async () => {
   const png = await require('sharp')({ create: { width: 64, height: 64, channels: 4, background: '#ed7542' } }).png().toBuffer();
   writeSamples(models, png);
-  let api = await start();
+  let api = await start(upgradeFrom || executable);
   assert.equal((await api.ipc('getPreferences')).logLevel, 'debug', 'Existing meshFlask profile must be retained');
-  check('AppImage launches with isolated profile and sandboxed renderer');
+  check('packaged app launches with isolated profile and sandboxed renderer');
   const added = await api.ipc('addLibrary', { mountPath: models });
   assert.equal(added.ok, true, added.error);
   const libraryId = added.library.id;
@@ -121,16 +132,29 @@ async function close(api) {
   check('packaged SQLite and workers index/render all six formats; malformed STL fails');
   const file = files.find((item) => item.ext === 'gltf');
   await api.ipc('setFileNotes', libraryId, file.id, 'Persisted by packaged acceptance');
+  const savedTag = await api.ipc('addTagToFile', libraryId, file.id, 'release/keep');
+  await api.ipc('setFileRatings', libraryId, [file.id], 4);
+  await api.ipc('setFileColorLabels', libraryId, [file.id], 'green');
+  const customThumb = await require('sharp')({ create: { width: 96, height: 96, channels: 4, background: '#466cbd' } }).png().toBuffer();
+  await api.evaluate(`window.${api.bridge}.saveCustomThumbnail(${JSON.stringify(libraryId)}, ${file.id}, new Uint8Array(${JSON.stringify([...customThumb])}))`);
+  const thumbnailFiles = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? thumbnailFiles(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+  const savedThumbnail = thumbnailFiles(path.join(models, '.meshFlask', 'thumbs')).find(name => fs.readFileSync(name).equals(customThumb));
+  assert.ok(savedThumbnail, 'Custom thumbnail was written');
   await api.ipc('patchPreferences', { logLevel: 'warn' });
   await api.evaluate("localStorage.setItem('rename-acceptance', 'saved-ui-state')");
   await close(api);
-  check('main-window close shuts down the packaged app and workers');
+  check(process.platform === 'darwin' ? 'packaged macOS test session closes' : 'main-window close shuts down the packaged app and workers');
   api = await start();
   assert.ok((await api.ipc('listLibraries')).some((library) => library.id === libraryId));
   assert.equal((await api.ipc('queryFiles', { libraryId })).find((row) => row.id === file.id).notes, 'Persisted by packaged acceptance');
+  const retained = (await api.ipc('queryFiles', { libraryId })).find(row => row.id === file.id);
+  assert.equal(retained.rating, 4);
+  assert.equal(retained.colorLabel, 'green');
+  assert.ok((await api.ipc('listTagsForFile', libraryId, file.id)).some(tag => tag.id === savedTag.id && tag.name === savedTag.name));
+  assert.deepEqual(fs.readFileSync(savedThumbnail), customThumb);
   assert.equal((await api.ipc('getPreferences')).logLevel, 'warn');
   assert.equal(await api.evaluate("localStorage.getItem('rename-acceptance')"), 'saved-ui-state');
-  check('library, annotations, and preferences survive a packaged-app restart');
+  check(`library IDs, tags, notes, ratings, custom thumbnails, preferences, and UI state survive ${upgradeFrom ? 'the meshFlask upgrade' : 'restart'}`);
   await api.ipc('patchPreferences', { logLevel: 'debug' });
   const logPath = path.join(profile, 'logs', 'main.log');
   const offset = fs.statSync(logPath).size;
@@ -140,6 +164,7 @@ async function close(api) {
   const screenshot = await api.send('Page.captureScreenshot');
   fs.writeFileSync(path.join(root, 'app.png'), Buffer.from(screenshot.data, 'base64'));
   check('packaged live glTF preview loads external buffer and texture');
+  if (process.env.STL_SHERPA_SHOWCASE) await require('./capture-showcase.cjs')(api, root, libraryId, waitFor);
   await close(api);
   fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ passed: true, executable, results }, null, 2));
   console.log(`PACKAGED COMPLETE: ${root}`);

@@ -1,6 +1,6 @@
 {
   "name": "stl-sherpa",
-  "version": "0.3.0-alpha.1",
+  "version": "0.3.0-alpha.2",
   "description": "Browser and organizer for 3D model files",
   "main": "out/main/index.js",
   "author": "stl-sherpa",
@@ -34,7 +34,7 @@
   "build": {
     "appId": "com.meshFlask.app",
     "productName": "stl-sherpa",
-    "copyright": "Copyright © Matt Thorson",
+    "copyright": "Copyright \u00a9 Matt Thorson",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -55,20 +55,8 @@
       "category": "public.app-category.graphics-design",
       "icon": "build/icon.png",
       "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
+        "dmg",
+        "zip"
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -105,8 +93,17 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
         }
       ]
+    },
+    "deb": {
+      "maintainer": "Matt Thorson <mst@thorson.net>"
     }
   },
   "devDependencies": {

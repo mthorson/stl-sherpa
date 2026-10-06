@@ -87,9 +87,9 @@ are always safe.
 
 ```sh
 npm run dist            # builds for the current platform
-npm run dist:mac        # macOS DMG + zip, arm64 + x64
+npm run dist:mac        # macOS DMG + zip, native architecture
 npm run dist:win        # Windows NSIS installer, x64 (cross-builds from Mac)
-npm run dist:linux      # Linux AppImage, x64
+npm run dist:linux      # Linux AppImage + Debian package, x64
 ```
 
 Output lands in `release/`. macOS builds are signed and notarized when the
@@ -108,6 +108,32 @@ The app icon is generated from `build/icon.svg` (matches the in-app logo).
 `npm run build:icon` re-renders the PNG at 1024×1024 via `sharp`;
 electron-builder converts that into the platform-specific `.icns` / `.ico`
 at packaging time.
+
+### Installing on Ubuntu 24.04
+
+Download the `.deb` from the release and install it with:
+
+```sh
+sudo apt install ./stl-sherpa_*_amd64.deb
+```
+
+The Debian package installs the app and an application-specific AppArmor
+profile. Ubuntu's user-namespace restriction remains enabled, and Chromium
+keeps its sandbox.
+
+For the AppImage, download the matching `stl-sherpa-appimage.apparmor`
+release asset and install both at these exact paths:
+
+```sh
+sudo install -m 755 stl-sherpa-*.AppImage /opt/stl-sherpa.AppImage
+sudo install -m 644 stl-sherpa-appimage.apparmor /etc/apparmor.d/stl-sherpa-appimage
+sudo apparmor_parser -r /etc/apparmor.d/stl-sherpa-appimage
+/opt/stl-sherpa.AppImage --appimage-extract-and-run
+```
+
+The stable, root-owned AppImage path is part of the profile. Repeat the
+first command to replace it on upgrade. Extraction mode avoids requiring
+FUSE. Do not disable the Chromium sandbox to work around launch problems.
 
 ### Sandbox shells
 
@@ -275,7 +301,7 @@ src/
 npm run test:full
 npm run test:integration   # also exercises live filesystem events
 npm run test:app           # builds and drives the real Electron app
-npm run test:packaged      # tests an already-built Linux AppImage
+npm run test:packaged      # tests a built AppImage or installed executable
 ```
 
 The unit and filesystem suites cover path resolution, SQLite queries,
@@ -303,12 +329,23 @@ generate their fixtures, so a fresh checkout does not need the old private
 `manticore.3mf` files. These generated samples do not replace acceptance
 testing of actual slicer exports or physical NAS disconnects.
 
-`test:packaged` launches the built Linux AppImage using a separate XDG
+`test:packaged` launches the built Linux AppImage or an installed executable using an isolated
 profile and a loopback-only DevTools connection. It checks packaged
 SQLite/workers, all six model formats, live glTF preview, clean exit, and
-library/annotation/preference persistence after restart. Results and a
+library IDs, tags, notes, ratings, custom thumbnails, preferences, and UI
+state after restart. Results and a
 screenshot are saved under `test-results/packaged/`. Pass an alternative
-AppImage path with `npm run test:packaged -- /path/to/app.AppImage`.
+executable path with `npm run test:packaged -- /path/to/app`. Set
+`STL_SHERPA_UPGRADE_FROM=/path/to/meshFlask.AppImage` to seed the profile
+and library with the old app before opening them in the new build.
+
+The release workflow installs and tests Windows NSIS, native Apple Silicon
+and Intel DMGs, and the Debian package. It verifies macOS signatures and
+notarization. Both Linux installers are tested with Ubuntu 24.04 user-namespace
+restrictions enabled and application-specific AppArmor profiles. A draft
+prerelease with SHA-256 checksums is created only after all installer jobs pass.
+Release builds can be started manually from GitHub Actions; publication remains
+a separate review step.
 
 CI runs filesystem integration tests, the Linux desktop test under Xvfb,
 and AppImage acceptance. Separate macOS and Windows jobs exercise the

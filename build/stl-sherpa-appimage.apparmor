@@ -1,0 +1,7 @@
+# Install the AppImage at /opt/stl-sherpa.AppImage (owned by root).
+# This allows Chromium's sandbox without disabling Ubuntu's global restriction.
+abi <abi/4.0>,
+include <tunables/global>
+profile stl-sherpa-appimage /opt/stl-sherpa.AppImage flags=(unconfined) {
+  userns,
+}
