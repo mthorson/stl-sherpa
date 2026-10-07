@@ -61,7 +61,11 @@ export interface ThumbJobsRepo {
    * abandonment (e.g. app shutdown mid-render) doesn't burn the retry budget.
    */
   releaseForRetry(jobId: number): void;
-  /** Reap stale claims (claimed_by another process or > maxAgeMs ago). */
+  /**
+   * Release claims older than maxAgeMs regardless of owner. Age-based only:
+   * another live process's fresh claims (shared NAS library) are left alone,
+   * and a crashed process's claims age out on their own.
+   */
   reapStale(thisProcess: string, maxAgeMs: number): number;
   /**
    * Drop every unclaimed job, returning how many were removed. In-flight
@@ -123,11 +127,15 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     WHERE id = ?
   `);
 
-  const reapStmt = db.prepare<[string, number]>(`
+  // Reap strictly by age. Reaping "any other process's claims" immediately
+  // would make two app instances sharing a NAS library steal each other's
+  // in-flight work on every reconcile; a crashed process's claims age past
+  // the cutoff on their own.
+  const reapStmt = db.prepare<[number]>(`
     UPDATE thumb_jobs
     SET claimed_at = NULL, claimed_by = NULL
     WHERE claimed_at IS NOT NULL
-      AND (claimed_by != ? OR claimed_at < ?)
+      AND claimed_at < ?
   `);
 
   const clearPendingStmt = db.prepare(`DELETE FROM thumb_jobs WHERE claimed_at IS NULL`);
@@ -196,9 +204,9 @@ export function createThumbJobsRepo(db: Database.Database): ThumbJobsRepo {
     releaseForRetry(jobId) {
       releaseForRetryStmt.run(jobId);
     },
-    reapStale(thisProcess, maxAgeMs) {
+    reapStale(_thisProcess, maxAgeMs) {
       const cutoff = Date.now() - maxAgeMs;
-      return reapStmt.run(thisProcess, cutoff).changes;
+      return reapStmt.run(cutoff).changes;
     },
     clearPending() {
       return clearPendingStmt.run().changes;

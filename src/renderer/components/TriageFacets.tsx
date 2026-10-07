@@ -38,7 +38,7 @@ export function TriageFacets({
           </Text>
           {hasActiveFilter && (
             <Tooltip label="Clear triage filters">
-              <ActionIcon variant="subtle" size="xs" onClick={clearAll}>
+              <ActionIcon variant="subtle" size="xs" onClick={clearAll} aria-label="Clear triage filters">
                 <Text size="xs">×</Text>
               </ActionIcon>
             </Tooltip>
@@ -48,7 +48,7 @@ export function TriageFacets({
       {headerless && hasActiveFilter && (
         <Group justify="flex-end">
           <Tooltip label="Clear triage filters">
-            <ActionIcon variant="subtle" size="xs" onClick={clearAll}>
+            <ActionIcon variant="subtle" size="xs" onClick={clearAll} aria-label="Clear triage filters">
               <Text size="xs">×</Text>
             </ActionIcon>
           </Tooltip>

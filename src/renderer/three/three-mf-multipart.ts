@@ -1,6 +1,11 @@
 import { unzipSync, zipSync, type Unzipped, type Zippable } from 'fflate';
 import { extract3MFEmbeddedThumbnail } from './three-mf-fast-path';
-import { assertSafeArchive, isSafeArchiveEntryName } from './zip-safety';
+import {
+  MAX_TOTAL_DECOMPRESSED_BYTES,
+  MAX_ZIP_ENTRIES,
+  assertSafeArchive,
+  isSafeArchiveEntryName
+} from './zip-safety';
 
 /**
  * Bambu Studio / PrusaSlicer / OrcaSlicer exports use the 3MF Production
@@ -77,7 +82,11 @@ export function inspectThreeMF(buffer: ArrayBuffer): ThreeMFInspection {
 
   let full: Unzipped;
   try {
-    full = unzipSync(bytes);
+    // Decompress only the parts ThreeMFLoader actually reads. Slicer exports
+    // stuff sizeable extras into the archive (plate previews, G-code,
+    // paint/support data under Metadata/) that would otherwise all be
+    // decompressed and re-zipped synchronously on the UI thread.
+    full = unzipSync(bytes, { filter: (f) => isPartNeededForRender(f.name) });
   } catch {
     return { kind: 'too-large', embeddedPng: extract3MFEmbeddedThumbnail(buffer) };
   }
@@ -92,8 +101,19 @@ export function inspectThreeMF(buffer: ArrayBuffer): ThreeMFInspection {
 
 function collectFileSizes(bytes: Uint8Array): Map<string, number> {
   const sizes = new Map<string, number>();
+  // Enforce the caps per central-directory ENTRY, not per unique name:
+  // duplicate names collapse in the map, but the full unzip below still
+  // decompresses every copy, so a crafted archive with thousands of
+  // same-named entries would otherwise sail past both limits.
+  let entries = 0;
+  let totalBytes = 0;
   unzipSync(bytes, {
     filter: (file) => {
+      entries++;
+      totalBytes += file.originalSize;
+      if (entries > MAX_ZIP_ENTRIES || totalBytes > MAX_TOTAL_DECOMPRESSED_BYTES) {
+        throw new Error('3MF exceeds archive safety limits');
+      }
       sizes.set(file.name, file.originalSize);
       return false;
     }
@@ -147,6 +167,21 @@ function extractReferencedPaths(mainXml: string): string[] {
 
 function normalizeZipPath(p: string): string {
   return p.startsWith('/') ? p.slice(1) : p;
+}
+
+/**
+ * The subset of zip entries ThreeMFLoader consumes: OPC plumbing
+ * ([Content_Types].xml + .rels), the .model parts themselves, and any
+ * textures under 3D/. Everything else (Metadata previews, embedded G-code,
+ * slicer project settings) is dead weight for rendering.
+ */
+function isPartNeededForRender(name: string): boolean {
+  const n = name.toLowerCase();
+  if (n.endsWith('.model') || n.endsWith('.rels')) return true;
+  if (n === '[content_types].xml') return true;
+  if (n.startsWith('3d/textures/')) return true;
+  if (n.startsWith('3d/') && /\.(png|jpe?g)$/.test(n)) return true;
+  return false;
 }
 
 function repackInDependencyOrder(

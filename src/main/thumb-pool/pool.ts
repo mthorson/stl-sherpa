@@ -218,22 +218,17 @@ export class ThumbPool {
     window.webContents.on('did-fail-load', (_e, code, description, url) => {
       log.error('worker did-fail-load', { workerId: id, code, description, url });
     });
-    window.webContents.on(
-      'console-message',
-      // Older signature: (event, level, message, line, sourceId). Cast the
-      // any-typed handler so this compiles across Electron versions.
-      ((_e: unknown, level: number, message: string, line: number, sourceId: string) => {
-        // Ignore electron-log's own renderer-side output. Worker code that logs
-        // via `electron-log/renderer` already reaches main through the dedicated
-        // log IPC channel, so re-capturing its console print here would only
-        // duplicate it — and feed a potential feedback loop. This bridge exists
-        // solely to surface raw breakage that bypasses electron-log (unresolved
-        // imports, Three.js console errors, etc.).
-        if (sourceId.includes('electron-log')) return;
-        const sink = level >= 2 ? log.warn : log.info;
-        sink(`[worker ${id}] ${message}`, { sourceId, line });
-      }) as never
-    );
+    window.webContents.on('console-message', (event) => {
+      // Ignore electron-log's own renderer-side output. Worker code that logs
+      // via `electron-log/renderer` already reaches main through the dedicated
+      // log IPC channel, so re-capturing its console print here would only
+      // duplicate it — and feed a potential feedback loop. This bridge exists
+      // solely to surface raw breakage that bypasses electron-log (unresolved
+      // imports, Three.js console errors, etc.).
+      if ((event.sourceId ?? '').includes('electron-log')) return;
+      const sink = event.level === 'warning' || event.level === 'error' ? log.warn : log.info;
+      sink(`[worker ${id}] ${event.message}`, { sourceId: event.sourceId, line: event.lineNumber });
+    });
 
     if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
       const base = process.env.ELECTRON_RENDERER_URL.replace(/\/$/, '');

@@ -1,6 +1,7 @@
 import { ipcMain, shell } from 'electron';
 import { existsSync, statSync } from 'node:fs';
 import { copyFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { IPC } from '@shared/ipc-channels';
 import { broadcastLibraryEvent } from '@main/events';
 import type {
@@ -22,11 +23,17 @@ import { isLightingStyle } from '@shared/lighting-types';
 import { isDefaultOrientation, isFileOrientation } from '@shared/orientation';
 import { isColorLabel, isValidRating } from '@shared/ratings';
 import { isCameraState } from '@shared/types';
+import { extensionOf } from '@shared/formats';
+import { isInvalidFilename } from '@shared/rename-template';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { scanner } from '@main/scanner/service';
 import { queueRunner } from '@main/thumb-pool/queue-runner';
 import { undoQueue } from '@main/undo/queue';
-import { moveOnDisk, renameEntryFor } from '@main/files/move-service';
+import { moveOnDisk, renameEntryFor, splitRelPath } from '@main/files/move-service';
+import {
+  assertDestinationInsideLibrary,
+  assertExistingPathInsideLibrary
+} from '@main/files/path-safety';
 
 const broadcast = broadcastLibraryEvent;
 
@@ -55,7 +62,7 @@ async function reverseRename(
   } catch (err) {
     return { ok: false, error: (err as Error).message };
   }
-  const moved = await moveOnDisk(absCurrent, absOriginal);
+  const moved = await moveOnDisk(lib.entry.mountPath, absCurrent, absOriginal);
   if (!moved.ok) return moved;
   lib.files.applyRenames([renameEntryFor(fileId, fromRelPath)]);
   broadcast({ kind: 'files-changed', libraryId });
@@ -241,6 +248,28 @@ export function registerFilesIpc(): void {
       if (!lib) return { ok: false, error: `Library ${libraryId} not open` };
       if (plan.length === 0) return { ok: true, renamed: 0 };
 
+      // The renderer builds the preview, but the DB remains authoritative.
+      // Reject a stale or malformed plan before touching the filesystem.
+      const seenIds = new Set<number>();
+      for (const item of plan) {
+        if (seenIds.has(item.fileId)) {
+          return { ok: false, error: `File ${item.fileId} appears more than once` };
+        }
+        seenIds.add(item.fileId);
+        const current = lib.files.getById(item.fileId);
+        if (!current || current.relPath !== item.fromRelPath) {
+          return { ok: false, error: `Rename preview is stale for ${item.fromRelPath}` };
+        }
+        const target = splitRelPath(item.toRelPath);
+        if (
+          target.parentDir !== current.parentDir ||
+          isInvalidFilename(target.filename) ||
+          extensionOf(target.filename) !== current.ext
+        ) {
+          return { ok: false, error: `Invalid rename target: ${item.toRelPath}` };
+        }
+      }
+
       // Pre-flight collision detection. A new path collides if:
       //   - It exists in the plan more than once, OR
       //   - It already exists in the DB on a file NOT in the plan, OR
@@ -262,17 +291,33 @@ export function registerFilesIpc(): void {
         if (seenFrom.has(p.fromRelPath)) collisions.push(p.fromRelPath);
         seenFrom.add(p.fromRelPath);
       }
+      // A destination that already exists on disk but isn't a source in the
+      // plan would be silently overwritten by rename(2) — treat as collision.
+      // (Destinations that ARE plan sources are fine: the two-phase move
+      // below vacates them before any final rename lands.)
+      const fromPaths = new Set(plan.map((p) => p.fromRelPath));
+      for (const p of plan) {
+        if (!fromPaths.has(p.toRelPath) && existsSync(lib.resolver.toAbsolute(p.toRelPath))) {
+          collisions.push(p.toRelPath);
+        }
+      }
       if (collisions.length > 0) {
         return { ok: false, collisions: [...new Set(collisions)] };
       }
 
-      // Execute FS renames sequentially. On failure, rolling back what's
-      // already happened keeps DB and disk in sync.
-      const done: Array<{ absFrom: string; absTo: string }> = [];
+      // Execute FS renames in two phases: every source moves to a unique temp
+      // name first, then temps move to their final paths. Plans that permute
+      // names within the set (swaps, index shifts) would otherwise overwrite a
+      // not-yet-moved source, since rename(2) clobbers silently. On failure,
+      // rolling back what's already happened keeps DB and disk in sync.
+      const toTemp: Array<{ absFrom: string; absTemp: string; absTo: string }> = [];
+      const toFinal: Array<{ absTemp: string; absTo: string }> = [];
       try {
-        for (const item of plan) {
+        for (let i = 0; i < plan.length; i++) {
+          const item = plan[i];
           const absFrom = lib.resolver.toAbsolute(item.fromRelPath);
           const absTo = lib.resolver.toAbsolute(item.toRelPath);
+          const absTemp = `${absTo}.mf-rename-${randomUUID()}`;
           // Bail if the source doesn't exist on disk anymore — the watcher
           // may have already moved it.
           if (!existsSync(absFrom)) {
@@ -281,15 +326,28 @@ export function registerFilesIpc(): void {
           // moveOnDisk ensures the destination directory exists (a noop when
           // the template only changes the basename). Throw on failure to
           // trigger the rollback below.
-          const moved = await moveOnDisk(absFrom, absTo);
+          const moved = await moveOnDisk(lib.entry.mountPath, absFrom, absTemp);
           if (!moved.ok) throw new Error(moved.error);
-          done.push({ absFrom, absTo });
+          toTemp.push({ absFrom, absTemp, absTo });
+        }
+        for (const t of toTemp) {
+          // Last-line defence against a race: something landed at the final
+          // path between pre-flight and now.
+          if (existsSync(t.absTo)) {
+            throw new Error(`Destination already exists: ${t.absTo}`);
+          }
+          const moved = await moveOnDisk(lib.entry.mountPath, t.absTemp, t.absTo);
+          if (!moved.ok) throw new Error(moved.error);
+          toFinal.push(t);
         }
       } catch (err) {
-        // Roll back each completed move in reverse order. Best-effort: if a
-        // rollback fails the remaining ones still try.
-        for (let i = done.length - 1; i >= 0; i--) {
-          await moveOnDisk(done[i].absTo, done[i].absFrom);
+        // Roll back in reverse order: finals back to temps, temps back to
+        // sources. Best-effort: if a rollback fails the remaining ones still try.
+        for (let i = toFinal.length - 1; i >= 0; i--) {
+          await moveOnDisk(lib.entry.mountPath, toFinal[i].absTo, toFinal[i].absTemp);
+        }
+        for (let i = toTemp.length - 1; i >= 0; i--) {
+          await moveOnDisk(lib.entry.mountPath, toTemp[i].absTemp, toTemp[i].absFrom);
         }
         return { ok: false, error: (err as Error).message };
       }
@@ -342,7 +400,12 @@ export function registerFilesIpc(): void {
 
       const absFrom = lib.resolver.toAbsolute(file.relPath);
       const absTo = lib.resolver.toAbsolute(toRelPath);
-      const moved = await moveOnDisk(absFrom, absTo);
+      // Also check the disk, not just the DB — rename(2) silently overwrites,
+      // and the destination may hold a file the scanner hasn't indexed.
+      if (existsSync(absTo)) {
+        return { ok: false, error: `A file already exists at ${toRelPath}` };
+      }
+      const moved = await moveOnDisk(lib.entry.mountPath, absFrom, absTo);
       if (!moved.ok) return moved;
       lib.files.applyRenames([renameEntryFor(fileId, toRelPath)]);
       broadcast({ kind: 'files-changed', libraryId });
@@ -386,6 +449,8 @@ export function registerFilesIpc(): void {
       const absFrom = lib.resolver.toAbsolute(file.relPath);
       const absTo = lib.resolver.toAbsolute(toRelPath);
       try {
+        await assertExistingPathInsideLibrary(lib.entry.mountPath, absFrom);
+        await assertDestinationInsideLibrary(lib.entry.mountPath, absTo);
         await copyFile(absFrom, absTo);
       } catch (err) {
         return { ok: false, error: (err as Error).message };
@@ -439,7 +504,7 @@ export function registerFilesIpc(): void {
     const lib = getOpenLibrary(req.libraryId);
     if (!lib) return [];
     const { libraryId: _, ...rest } = req;
-    return lib.files.query(rest);
+    return lib.collectionQuery.query(rest);
   });
 
   // Forward scanner events to every renderer window. Renderers filter by libraryId.
@@ -463,7 +528,10 @@ export function registerFilesIpc(): void {
   queueRunner.on('thumb-rendered', (libraryId: string, fileId: number) => {
     broadcast({ kind: 'thumb-rendered', libraryId, fileId });
   });
-  queueRunner.on('thumb-failed', (libraryId: string, fileId: number, error: string) => {
-    broadcast({ kind: 'thumb-failed', libraryId, fileId, error });
-  });
+  queueRunner.on(
+    'thumb-failed',
+    (libraryId: string, fileId: number, error: string, terminal: boolean) => {
+      broadcast({ kind: 'thumb-failed', libraryId, fileId, error, terminal });
+    }
+  );
 }

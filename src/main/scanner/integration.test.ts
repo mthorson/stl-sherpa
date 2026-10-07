@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import migration001 from '../db/migrations/001_init.sql?raw';
 import migration002 from '../db/migrations/002_fts_triggers.sql?raw';
@@ -34,7 +34,9 @@ try {
   DatabaseCtor = null;
 }
 
-const canRun = existsSync(TESTFILES) && DatabaseCtor !== null;
+// Gate on the SPECIFIC fixture this suite hard-codes (not just the folder):
+// testfiles/ is a gitignored scratch area and may hold unrelated libraries.
+const canRun = existsSync(join(TESTFILES, 'manticore.3mf')) && DatabaseCtor !== null;
 
 describe.runIf(canRun)('Phase 2 backend end-to-end against testfiles/', () => {
   const Database = DatabaseCtor!;

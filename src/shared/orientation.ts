@@ -23,7 +23,6 @@ export interface FileOrientation {
 }
 
 /** Stored as JSON in `files.orientation_json`. Bumping requires a migration. */
-export const ORIENTATION_SCHEMA_VERSION = 1;
 
 const DEFAULTS_BY_EXT: Record<string, FileOrientation> = {
   stl: { upAxis: '+Z' },

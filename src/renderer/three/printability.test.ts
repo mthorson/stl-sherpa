@@ -41,7 +41,7 @@ describe('scorePrintability', () => {
   it('penalizes thin / slab-like geometry', () => {
     const r = scorePrintability({ isWatertight: true, overhangFraction: 0, minMaxRatio: 0.005 });
     expect(r.score).toBe(85);
-    expect(r.factors).toContain('thin / slab-like geometry');
+    expect(r.factors).toContain('very thin or flat, may be fragile');
   });
 
   it('treats unknown factors as neutral rather than failing', () => {
@@ -52,7 +52,7 @@ describe('scorePrintability', () => {
     });
     expect(r.score).toBe(100);
     expect(r.rating).toBe('good');
-    expect(r.factors).toContain('watertightness unknown');
+    expect(r.factors).toContain("couldn't check watertightness");
   });
 
   it('clamps to 0 when every factor is bad', () => {

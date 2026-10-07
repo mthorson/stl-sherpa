@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -51,6 +51,7 @@ export function SmartCollectionModal({
   const [query, setQuery] = useState<SmartQuery>(emptySmartQuery());
   const [matchCount, setMatchCount] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const previewRequestRef = useRef(0);
 
   // Seed form from `existing` (or fresh when creating) every time the modal opens.
   useEffect(() => {
@@ -67,6 +68,7 @@ export function SmartCollectionModal({
   // Live preview count — debounced so each keystroke doesn't hit the DB.
   useEffect(() => {
     if (!opened || !libraryId) return;
+    const request = ++previewRequestRef.current;
     const t = setTimeout(async () => {
       try {
         const rows = await ipc.queryFiles({
@@ -78,12 +80,15 @@ export function SmartCollectionModal({
           colorLabels: query.colorLabels && query.colorLabels.length > 0 ? query.colorLabels : undefined,
           limit: 1000
         });
-        setMatchCount(rows.length);
+        if (request === previewRequestRef.current) setMatchCount(rows.length);
       } catch {
-        setMatchCount(null);
+        if (request === previewRequestRef.current) setMatchCount(null);
       }
     }, PREVIEW_DEBOUNCE_MS);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      if (request === previewRequestRef.current) previewRequestRef.current += 1;
+    };
   }, [opened, libraryId, query]);
 
   const tagOptions = useMemo(
@@ -95,7 +100,11 @@ export function SmartCollectionModal({
     if (!libraryId) return;
     const trimmed = name.trim();
     if (!trimmed) {
-      notifications.show({ color: 'red', title: 'Name required', message: 'Pick a name first.' });
+      notifications.show({
+        color: 'red',
+        title: 'Needs a name',
+        message: 'Give this collection a name first.'
+      });
       return;
     }
     setSubmitting(true);
@@ -115,7 +124,7 @@ export function SmartCollectionModal({
     } catch (err) {
       notifications.show({
         color: 'red',
-        title: 'Smart collection',
+        title: "Couldn't save smart collection",
         message: (err as Error).message
       });
     } finally {
@@ -237,7 +246,11 @@ export function SmartCollectionModal({
             color="indigo"
             leftSection={<IconStarFilled size={10} />}
           >
-            {matchCount == null ? '…' : `${matchCount} match${matchCount === 1 ? '' : 'es'}`}
+            {matchCount == null
+              ? '…'
+              : matchCount >= 1000
+                ? '1000+ matches'
+                : `${matchCount} match${matchCount === 1 ? '' : 'es'}`}
           </Badge>
           <Group gap="sm">
             <Button variant="default" onClick={onClose}>

@@ -22,8 +22,8 @@ export function MoveConfirmModal({ opened, files, toParentDir, onCancel, onConfi
           Move {files.length} file{files.length === 1 ? '' : 's'} to <Code>{dest}</Code>?
         </Text>
         <Text size="xs" c="dimmed">
-          The file{files.length === 1 ? '' : 's'} will be moved on disk via fs.rename; the library
-          index updates atomically.
+          The file{files.length === 1 ? ' is' : 's are'} moved on disk, and the library updates
+          automatically.
         </Text>
         <Group justify="flex-end" gap="sm">
           <Button variant="default" onClick={onCancel}>

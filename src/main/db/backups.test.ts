@@ -58,7 +58,15 @@ describe('rotateBackup', () => {
     rotateBackup(root);
     const backups = listBackups();
     expect(backups).toHaveLength(1);
-    expect(backups[0]).toMatch(/^meshFlask-\d{8}-\d{6}\.db$/);
+    expect(backups[0]).toMatch(/^meshFlask-\d{8}-\d{6}-\d{3}(?:-\d+)?\.db$/);
+  });
+
+  it('does not overwrite a backup created in the same millisecond', () => {
+    writeDb('first');
+    rotateBackup(root);
+    writeDb('second');
+    rotateBackup(root);
+    expect(listBackups()).toHaveLength(2);
   });
 
   it('prunes to keep when the existing count is over the limit', () => {

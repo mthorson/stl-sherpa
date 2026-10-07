@@ -53,7 +53,7 @@ export function extractMetadata(
 
   obj.traverse((node) => {
     const mesh = node as THREE.Mesh;
-    if (!(mesh as THREE.Object3D).type || !(mesh as THREE.Mesh).isMesh) return;
+    if (!(mesh as THREE.Mesh).isMesh) return;
     if (!mesh.geometry) return;
 
     meshCount++;

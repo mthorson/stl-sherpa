@@ -60,3 +60,33 @@ describe.runIf(canRun)('thumb-jobs clearPending (cache-rebuild cancel)', () => {
     db.close();
   });
 });
+
+describe.runIf(canRun)('thumb-jobs reapStale', () => {
+  it('reaps by age only, never a live process’s fresh claims', () => {
+    const db = freshDb();
+    const jobs = createThumbJobsRepo(db);
+    jobs.enqueueMany([
+      { fileId: 1, priority: PRIORITY_BACKGROUND },
+      { fileId: 2, priority: PRIORITY_BACKGROUND }
+    ]);
+
+    // One fresh claim by another process (a second app instance on a shared
+    // NAS library) and one stale claim that predates the cutoff.
+    const other = jobs.claimNext('other-process');
+    expect(other).not.toBeNull();
+    const mine = jobs.claimNext('this-process');
+    expect(mine).not.toBeNull();
+    db.prepare('UPDATE thumb_jobs SET claimed_at = ? WHERE id = ?').run(
+      Date.now() - 10 * 60_000,
+      mine!.id
+    );
+
+    const reaped = jobs.reapStale('this-process', 5 * 60_000);
+    expect(reaped).toBe(1);
+    // The other process's fresh claim survives.
+    expect(jobs.inFlightCount()).toBe(1);
+    expect(jobs.pendingCount()).toBe(1);
+
+    db.close();
+  });
+});

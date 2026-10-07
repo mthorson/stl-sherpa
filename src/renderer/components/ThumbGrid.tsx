@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActionIcon, Center, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconMinus, IconPlus, IconStarFilled } from '@tabler/icons-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { ExtractedMetadata, FileRecord, MeshValidation } from '@shared/types';
+import type { FileRecord, MeshValidation } from '@shared/types';
 import type { PrintBed } from '@shared/preferences';
 import { COLOR_LABEL_HEX } from '@shared/ratings';
 import { modelFitsAnyBed } from '@shared/print-bed';
 import { formatBytes } from '../util/format';
+import { parseFileMeta } from '../util/parse-meta';
 
 export interface TileClickModifiers {
   shift: boolean;
@@ -33,6 +34,8 @@ interface Props {
   headerExtras?: React.ReactNode;
   /** When registered, files that fit none of these beds get a warning badge. */
   printBeds?: PrintBed[];
+  /** Optional note after the item count, e.g. "showing the first 2000". */
+  countNote?: string;
 }
 
 const TILE_GAP = 8;
@@ -81,7 +84,8 @@ export function ThumbGrid({
   onTileClick,
   onTileContextMenu,
   headerExtras,
-  printBeds = []
+  printBeds = [],
+  countNote
 }: Props) {
   // Mutable so the callback ref below can write to it directly; the virtualizer
   // reads it via getScrollElement on every layout pass.
@@ -102,8 +106,13 @@ export function ThumbGrid({
 
   // Track the scroll container's width so we can pack the grid. Callback ref
   // attaches the observer when the element mounts; survives empty-state
-  // remounts because react re-runs the callback on every change.
+  // remounts because react re-runs the callback on every change. The
+  // observer lives in a ref so the previous one is reliably disconnected on
+  // element swap and unmount.
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const setScrollRef = useCallback((el: HTMLDivElement | null) => {
+    resizeObserverRef.current?.disconnect();
+    resizeObserverRef.current = null;
     scrollRef.current = el;
     if (!el) {
       setContainerWidth(0);
@@ -113,10 +122,7 @@ export function ThumbGrid({
     recompute();
     const ro = new ResizeObserver(recompute);
     ro.observe(el);
-    // Best-effort cleanup: stash the observer on the element so the next
-    // call disconnects it cleanly when the element changes.
-    (el as unknown as { __wh3dRO?: ResizeObserver }).__wh3dRO?.disconnect();
-    (el as unknown as { __wh3dRO?: ResizeObserver }).__wh3dRO = ro;
+    resizeObserverRef.current = ro;
   }, []);
 
   // Tiles render at the exact `thumbSize` so every +/- step is visually
@@ -169,6 +175,7 @@ export function ThumbGrid({
       >
         <Text size="xs" c="dimmed">
           {files.length} {files.length === 1 ? 'item' : 'items'}
+          {countNote && ` · ${countNote}`}
           {selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
         </Text>
         <Group gap={6} wrap="nowrap">
@@ -210,9 +217,9 @@ export function ThumbGrid({
         {files.length === 0 ? (
           <Center h="100%">
             <Stack align="center" gap={4}>
-              <Text c="dimmed">This folder has no indexed 3D files.</Text>
+              <Text c="dimmed">No 3D files here yet.</Text>
               <Text size="xs" c="dimmed">
-                Try selecting a parent folder or trigger a rescan from the toolbar.
+                Try a parent folder, or rescan the library from the toolbar.
               </Text>
             </Stack>
           </Center>
@@ -246,50 +253,20 @@ export function ThumbGrid({
                     boxSizing: 'border-box'
                   }}
                 >
-                  {rowItems.map((file) => {
-                    const meta = parseFileMeta(file.metadataJson);
-                    return (
-                      <Tile
-                        key={file.id}
-                        file={file}
-                        thumbVersion={thumbVersions.get(file.id) ?? 0}
-                        selected={selectedIds.has(file.id)}
-                        isPrimary={file.id === primaryId}
-                        tileHeight={tileHeight}
-                        bedFitProblem={
-                          printBeds.length > 0 && !modelFitsAnyBed(meta, printBeds)
-                        }
-                        meshValidation={meta?.validation ?? null}
-                        onClick={(e) => {
-                          onTileClick(file.id, {
-                            shift: e.shiftKey,
-                            meta: e.metaKey,
-                            ctrl: e.ctrlKey
-                          });
-                        }}
-                        onContextMenu={(e) => {
-                          if (!onTileContextMenu) return;
-                          e.preventDefault();
-                          // Finder-style behavior: right-clicking outside the
-                          // current multi-selection collapses it to just the
-                          // clicked tile, so the menu acts on what's under the
-                          // cursor rather than the prior selection.
-                          if (!selectedIds.has(file.id)) {
-                            onTileClick(file.id, { shift: false, meta: false, ctrl: false });
-                          }
-                          onTileContextMenu(file.id, e.clientX, e.clientY);
-                        }}
-                        onDragStart={(e) => {
-                          const ids = selectedIds.has(file.id) ? [...selectedIds] : [file.id];
-                          e.dataTransfer.setData(
-                            'application/x-wh3d-file-ids',
-                            JSON.stringify(ids)
-                          );
-                          e.dataTransfer.effectAllowed = 'move';
-                        }}
-                      />
-                    );
-                  })}
+                  {rowItems.map((file) => (
+                    <Tile
+                      key={file.id}
+                      file={file}
+                      thumbVersion={thumbVersions.get(file.id) ?? 0}
+                      selected={selectedIds.has(file.id)}
+                      isPrimary={file.id === primaryId}
+                      tileHeight={tileHeight}
+                      printBeds={printBeds}
+                      selectedIds={selectedIds}
+                      onTileClick={onTileClick}
+                      onTileContextMenu={onTileContextMenu}
+                    />
+                  ))}
                 </div>
               );
             })}
@@ -300,38 +277,55 @@ export function ThumbGrid({
   );
 }
 
-function parseFileMeta(json: string | null): ExtractedMetadata | null {
-  if (!json) return null;
-  try {
-    return JSON.parse(json) as ExtractedMetadata;
-  } catch {
-    return null;
-  }
-}
-
-function Tile({
+// Memoized: during a scan or cache rebuild, thumb-rendered events re-render
+// the grid constantly, and without memo every visible tile re-renders (and
+// re-parses its metadata JSON) per event. Handlers and the metadata parse
+// live inside the tile so its props stay stable across those storms.
+const Tile = memo(function Tile({
   file,
   thumbVersion,
   selected,
   isPrimary,
   tileHeight,
-  bedFitProblem,
-  meshValidation,
-  onClick,
-  onContextMenu,
-  onDragStart
+  printBeds,
+  selectedIds,
+  onTileClick,
+  onTileContextMenu
 }: {
   file: FileRecord;
   thumbVersion: number;
   selected: boolean;
   isPrimary: boolean;
   tileHeight: number;
-  bedFitProblem: boolean;
-  meshValidation: MeshValidation | null;
-  onClick: (e: React.MouseEvent) => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
-  onDragStart?: (e: React.DragEvent) => void;
+  printBeds: PrintBed[];
+  selectedIds: ReadonlySet<number>;
+  onTileClick: (fileId: number, modifiers: TileClickModifiers) => void;
+  onTileContextMenu?: (fileId: number, x: number, y: number) => void;
 }) {
+  const meta = useMemo(() => parseFileMeta(file.metadataJson), [file.metadataJson]);
+  const bedFitProblem = printBeds.length > 0 && !modelFitsAnyBed(meta, printBeds);
+  const meshValidation: MeshValidation | null = meta?.validation ?? null;
+
+  const onClick = (e: React.MouseEvent) => {
+    onTileClick(file.id, { shift: e.shiftKey, meta: e.metaKey, ctrl: e.ctrlKey });
+  };
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!onTileContextMenu) return;
+    e.preventDefault();
+    // Finder-style behavior: right-clicking outside the current
+    // multi-selection collapses it to just the clicked tile, so the menu
+    // acts on what's under the cursor rather than the prior selection.
+    if (!selected) {
+      onTileClick(file.id, { shift: false, meta: false, ctrl: false });
+    }
+    onTileContextMenu(file.id, e.clientX, e.clientY);
+  };
+  const onDragStart = (e: React.DragEvent) => {
+    const ids = selectedIds.has(file.id) ? [...selectedIds] : [file.id];
+    e.dataTransfer.setData('application/x-wh3d-file-ids', JSON.stringify(ids));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
   const color = EXT_COLORS[file.ext] ?? '#868e96';
   const showThumb = file.hasThumb || thumbVersion > 0;
   // Thumb URL keyed by file.libraryId so "All Libraries" mode works with the
@@ -460,7 +454,7 @@ function Tile({
         )}
         {meshValidation && meshValidation.isWatertight === false && !bedFitProblem && (
           <div
-            title="Non-watertight mesh"
+            title="This mesh isn't watertight, which can cause slicing problems"
             style={{
               position: 'absolute',
               top: 4,
@@ -524,4 +518,4 @@ function Tile({
       </div>
     </button>
   );
-}
+});

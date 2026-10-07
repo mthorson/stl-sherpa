@@ -39,7 +39,7 @@ function scanOverhangs(obj: THREE.Object3D): OverhangScan {
   let totalTriangles = 0;
   obj.traverse((node) => {
     const mesh = node as THREE.Mesh;
-    if (!(mesh as THREE.Object3D).type || !mesh.isMesh) return;
+    if (!mesh.isMesh) return;
     const geom = mesh.geometry as THREE.BufferGeometry | undefined;
     const pos = geom?.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!pos) return;
@@ -79,7 +79,7 @@ function scanOverhangs(obj: THREE.Object3D): OverhangScan {
 
   obj.traverse((node) => {
     const mesh = node as THREE.Mesh;
-    if (!(mesh as THREE.Object3D).type || !mesh.isMesh) return;
+    if (!mesh.isMesh) return;
     const geom = mesh.geometry as THREE.BufferGeometry | undefined;
     const pos = geom?.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (!pos) return;
@@ -146,7 +146,7 @@ export function scorePrintability(input: {
     score -= 40;
     factors.push('not watertight');
   } else if (isWatertight === null) {
-    factors.push('watertightness unknown');
+    factors.push("couldn't check watertightness");
   }
 
   if (overhangFraction != null) {
@@ -154,13 +154,13 @@ export function scorePrintability(input: {
     const penalty = Math.round(Math.min(1, overhangFraction) * 35);
     score -= penalty;
     if (overhangFraction >= 0.15) {
-      factors.push(`${Math.round(overhangFraction * 100)}% overhangs (supports likely)`);
+      factors.push(`${Math.round(overhangFraction * 100)}% of the surface overhangs, likely needs supports`);
     }
   }
 
   if (minMaxRatio != null && minMaxRatio < THIN_WALL_RATIO) {
     score -= 15;
-    factors.push('thin / slab-like geometry');
+    factors.push('very thin or flat, may be fragile');
   }
 
   score = Math.max(0, Math.min(100, score));

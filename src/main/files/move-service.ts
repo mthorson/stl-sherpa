@@ -1,6 +1,10 @@
 import { mkdir, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { RenameEntry } from '@main/db/repos/files';
+import {
+  assertDestinationInsideLibrary,
+  assertExistingPathInsideLibrary
+} from '@main/files/path-safety';
 
 /**
  * Reusable mechanics for moving/renaming a file on disk and reflecting the
@@ -29,10 +33,13 @@ export function renameEntryFor(fileId: number, toRelPath: string): RenameEntry {
  * failure (user-facing error vs rollback trigger) themselves.
  */
 export async function moveOnDisk(
+  libraryRoot: string,
   absFrom: string,
   absTo: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
+    await assertExistingPathInsideLibrary(libraryRoot, absFrom);
+    await assertDestinationInsideLibrary(libraryRoot, absTo);
     await mkdir(dirname(absTo), { recursive: true });
     await rename(absFrom, absTo);
     return { ok: true };

@@ -21,3 +21,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run test:full
+      # Catch electron-vite build breakage before a release tag does.
+      - run: npm run build

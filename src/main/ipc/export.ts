@@ -1,11 +1,12 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { BrowserWindow, app, dialog, ipcMain } from 'electron';
 import { createWriteStream, existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import archiver from 'archiver';
 import { IPC } from '@shared/ipc-channels';
 import type { ExportResult } from '@shared/types';
 import { getOpenLibrary } from '@main/libraries/manager';
+import { assertExistingPathInsideLibrary } from '@main/files/path-safety';
 
 export function registerExportIpc(): void {
   ipcMain.handle(
@@ -16,8 +17,23 @@ export function registerExportIpc(): void {
       const col = lib.collections.getById(collectionId);
       if (!col) return { ok: false, error: 'Collection not found' };
 
-      const fileIds = lib.collections.listFileIds(collectionId);
-      if (fileIds.length === 0) return { ok: false, error: 'Collection is empty' };
+      const files = lib.collectionQuery.query({ collectionId, limit: 10_000 });
+      if (files.length === 0) return { ok: false, error: 'Collection is empty' };
+
+      const exportFiles: Array<{ abs: string; relPath: string }> = [];
+      for (const file of files) {
+        const abs = lib.resolver.toAbsolute(file.relPath);
+        if (!existsSync(abs)) continue;
+        try {
+          await assertExistingPathInsideLibrary(lib.entry.mountPath, abs);
+          exportFiles.push({ abs, relPath: file.relPath });
+        } catch {
+          continue;
+        }
+      }
+      if (exportFiles.length === 0) {
+        return { ok: false, error: 'No files exist on disk for this collection' };
+      }
 
       const senderWindow = BrowserWindow.fromWebContents(event.sender);
       const saveOpts = {
@@ -31,6 +47,7 @@ export function registerExportIpc(): void {
       if (result.canceled || !result.filePath) return { ok: true, canceled: true };
       const destPath = result.filePath;
 
+      let added = 0;
       try {
         await new Promise<void>((resolve, reject) => {
           const output = createWriteStream(destPath);
@@ -40,13 +57,8 @@ export function registerExportIpc(): void {
           archive.on('error', reject);
           archive.pipe(output);
 
-          let added = 0;
-          for (const fid of fileIds) {
-            const file = lib.files.getById(fid);
-            if (!file) continue;
-            const abs = lib.resolver.toAbsolute(file.relPath);
-            if (!existsSync(abs)) continue;
-            archive.file(abs, { name: file.relPath });
+          for (const file of exportFiles) {
+            archive.file(file.abs, { name: file.relPath });
             added++;
           }
           if (added === 0) {
@@ -60,7 +72,7 @@ export function registerExportIpc(): void {
       } catch (err) {
         return { ok: false, error: (err as Error).message };
       }
-      return { ok: true, canceled: false, path: destPath, fileCount: fileIds.length };
+      return { ok: true, canceled: false, path: destPath, fileCount: added };
     }
   );
 
@@ -98,11 +110,21 @@ export function registerExportIpc(): void {
         show: false,
         webPreferences: { contextIsolation: true, sandbox: true }
       });
+      // Load from a temp file rather than a data: URL — Chromium caps URL
+      // length around 2MB, which a sheet of a few thousand files exceeds.
+      const htmlPath = join(app.getPath('temp'), `meshflask-contact-sheet-${Date.now()}.html`);
       try {
-        await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-        // Give thumbnails one beat to lay out — printToPDF doesn't await image
-        // loads. 300ms is empirically enough for the cached sidecars.
-        await new Promise((r) => setTimeout(r, 300));
+        await writeFile(htmlPath, html, 'utf8');
+        await win.loadFile(htmlPath);
+        // printToPDF doesn't await image loads, so wait until every thumbnail
+        // has decoded. Capped so a missing thumb can't hang the export.
+        await Promise.race([
+          win.webContents.executeJavaScript(
+            'Promise.allSettled([...document.images].map((img) => img.decode()))',
+            true
+          ),
+          new Promise((r) => setTimeout(r, 10_000))
+        ]);
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
           pageSize: 'Letter',
@@ -113,9 +135,8 @@ export function registerExportIpc(): void {
         return { ok: false, error: (err as Error).message };
       } finally {
         win.destroy();
+        await rm(htmlPath, { force: true });
       }
-      // Silence unused import; join may come in handy in extensions.
-      void join;
       return { ok: true, canceled: false, path: destPath, fileCount: fileIds.length };
     }
   );
@@ -172,7 +193,7 @@ function buildContactSheetHtml(
     </style>
   </head>
   <body>
-    <h1>meshFlask contact sheet — ${items.length} file${items.length === 1 ? '' : 's'}</h1>
+    <h1>meshFlask contact sheet (${items.length} file${items.length === 1 ? '' : 's'})</h1>
     <div class="grid">${cells}</div>
   </body>
 </html>`;

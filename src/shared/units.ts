@@ -29,5 +29,3 @@ export function formatVolume(mmCubed: number, unit: Unit): string {
   }
   return `${mmCubed.toFixed(2)} mm³`;
 }
-
-export const DEFAULT_UNIT: Unit = 'mm';

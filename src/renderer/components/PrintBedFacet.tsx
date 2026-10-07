@@ -26,7 +26,7 @@ export function PrintBedFacet({ beds, selectedBedId, onChange }: Props) {
         </Group>
         {selectedBedId != null && (
           <Tooltip label="Clear bed filter">
-            <ActionIcon variant="subtle" size="xs" onClick={() => onChange(null)}>
+            <ActionIcon variant="subtle" size="xs" onClick={() => onChange(null)} aria-label="Clear bed filter">
               <Text size="xs">×</Text>
             </ActionIcon>
           </Tooltip>

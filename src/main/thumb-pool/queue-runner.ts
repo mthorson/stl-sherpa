@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { listOpenLibraries, type OpenLibrary } from '@main/libraries/manager';
 import { RENDERER_VERSION } from '@main/db/repos/thumbnails';
 import { PRIORITY_BACKGROUND, PRIORITY_USER, PRIORITY_VISIBLE } from '@main/db/repos/thumb-jobs';
-import type { ExtractedMetadata } from '@shared/types';
+import type { ExtractedMetadata, FileRecord } from '@shared/types';
 import { DEFAULT_LIGHTING_STYLE, type LightingStyle } from '@shared/lighting-types';
 import {
   TRANSIENT_RENDER_ERROR_MESSAGES,
@@ -11,6 +11,7 @@ import {
 import { thumbAbsPath, thumbRelPath, writeThumbnailFile } from './storage';
 import { thumbPool } from './pool';
 import { scopedLogger, time } from '@main/logger';
+import { assertExistingPathInsideLibrary } from '@main/files/path-safety';
 
 const log = scopedLogger('queue-runner');
 
@@ -110,6 +111,7 @@ export class ThumbQueueRunner extends EventEmitter {
     if (!file) return;
     const thumbAbs = thumbAbsPath(library.entry.mountPath, fileId);
     await writeThumbnailFile(thumbAbs, png);
+    if (!sameSource(library.files.getById(fileId), file)) return;
     safeDb(library, () => {
       library.thumbnails.upsert({
         fileId,
@@ -176,6 +178,7 @@ export class ThumbQueueRunner extends EventEmitter {
     let metadata: ExtractedMetadata | null = null;
     let finalErr: string | null = null;
     try {
+      await assertExistingPathInsideLibrary(lib.entry.mountPath, absPath);
       const out = await time(
         log,
         'thumb-render',
@@ -201,9 +204,17 @@ export class ThumbQueueRunner extends EventEmitter {
 
     if (finalErr === null && png && metadata) {
       try {
+        if (!sameSource(lib.files.getById(file.id), file)) {
+          requeueChangedSource(lib, jobId, file.id);
+          return;
+        }
         const thumbAbs = thumbAbsPath(lib.entry.mountPath, file.id);
         await writeThumbnailFile(thumbAbs, png);
         if (!isLibraryDbOpen(lib)) return;
+        if (!sameSource(lib.files.getById(file.id), file)) {
+          requeueChangedSource(lib, jobId, file.id);
+          return;
+        }
         safeDb(lib, () => {
           lib.thumbnails.upsert({
             fileId: file.id,
@@ -230,6 +241,7 @@ export class ThumbQueueRunner extends EventEmitter {
 
     if (finalErr !== null) {
       const message = finalErr;
+      let terminal = false;
       // Transient shutdown errors are not the file's fault — release the
       // claim and roll the attempt counter back so the job is picked up
       // cleanly on the next session.
@@ -240,6 +252,7 @@ export class ThumbQueueRunner extends EventEmitter {
       safeDb(lib, () => {
         const attempts = readJobAttempts(lib, jobId);
         if (attempts >= MAX_ATTEMPTS) {
+          terminal = true;
           log.error('thumb render giving up', {
             libraryId: lib.entry.id,
             fileId: file.id,
@@ -267,13 +280,32 @@ export class ThumbQueueRunner extends EventEmitter {
           lib.thumbJobs.fail(jobId, message);
         }
       });
-      this.emit('thumb-failed', lib.entry.id, file.id, message);
+      this.emit('thumb-failed', lib.entry.id, file.id, message, terminal);
     }
   }
 }
 
 function isLibraryDbOpen(lib: OpenLibrary): boolean {
   return lib.db.open === true;
+}
+
+function sameSource(current: FileRecord | null, rendered: FileRecord): boolean {
+  return (
+    current != null &&
+    current.relPath === rendered.relPath &&
+    current.ext === rendered.ext &&
+    current.sizeBytes === rendered.sizeBytes &&
+    current.mtimeMs === rendered.mtimeMs &&
+    current.orientation.upAxis === rendered.orientation.upAxis &&
+    current.orientation.yaw === rendered.orientation.yaw
+  );
+}
+
+function requeueChangedSource(lib: OpenLibrary, jobId: number, fileId: number): void {
+  safeDb(lib, () => {
+    lib.thumbJobs.finish(jobId);
+    if (lib.files.getById(fileId)) lib.thumbJobs.enqueue(fileId, PRIORITY_BACKGROUND);
+  });
 }
 
 /** Run a DB-touching block; swallow errors that come from a closed connection. */

@@ -38,6 +38,11 @@ export interface ExternalAppRegistration {
   profiles?: SlicerProfile[];
 }
 
+export interface ExternalAppSettingsPatch {
+  argsTemplate?: string;
+  profiles?: SlicerProfile[];
+}
+
 export type Unit = 'mm' | 'in';
 
 // Duplicated rather than imported from src/main/logger.ts so this shared
@@ -80,6 +85,13 @@ export interface PreferencesFile {
    *  immediately without a restart. */
   logLevel?: LogLevel;
 }
+
+export type PreferencesPatch = Partial<
+  Pick<
+    PreferencesFile,
+    'unit' | 'printBeds' | 'nasPollIntervalSec' | 'renderQuality' | 'printCost' | 'logLevel'
+  >
+>;
 
 export function emptyPreferences(): PreferencesFile {
   return { version: 1, externalApps: [] };

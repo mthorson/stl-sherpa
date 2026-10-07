@@ -28,7 +28,7 @@ export function FolderRowList({
   if (paths.length === 0) {
     return (
       <Text size="xs" c="dimmed">
-        Empty.
+        Nothing here yet.
       </Text>
     );
   }

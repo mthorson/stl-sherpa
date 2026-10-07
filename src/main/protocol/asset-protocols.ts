@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { getOpenLibrary } from '@main/libraries/manager';
 import { thumbAbsPath } from '@main/thumb-pool/storage';
 import { scopedLogger } from '@main/logger';
+import { assertExistingPathInsideLibrary } from '@main/files/path-safety';
 
 const log = scopedLogger('protocol');
 
@@ -15,10 +16,21 @@ export const SCHEME_FILE = 'wh3d-file';
  * renderer's CSP and registered as standard URL schemes.
  */
 export function registerAssetSchemes(): void {
+  // corsEnabled + the Access-Control-Allow-Origin headers below: the
+  // renderer's fetch() of wh3d-file:// is a cross-origin request (its origin
+  // is the dev server or file://), and Electron 34+ actually enforces CORS
+  // for custom schemes. Without both, fetch() fails while <img> loads
+  // (no-cors) keep working — the preview breaks but thumbnails don't.
   protocol.registerSchemesAsPrivileged([
     {
       scheme: SCHEME_THUMB,
-      privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+      privileges: {
+        standard: true,
+        secure: true,
+        supportFetchAPI: true,
+        stream: true,
+        corsEnabled: true
+      }
     },
     {
       scheme: SCHEME_FILE,
@@ -27,6 +39,7 @@ export function registerAssetSchemes(): void {
         secure: true,
         supportFetchAPI: true,
         stream: true,
+        corsEnabled: true,
         bypassCSP: false
       }
     }
@@ -59,12 +72,31 @@ function parse(url: string): ParsedAssetURL | null {
   return { libraryId, fileId };
 }
 
+// Every response carries ACAO so the renderer's cross-origin fetch() passes
+// the CORS check. The handlers validate library membership and file identity
+// themselves, and no remote content ever runs in this app, so a wildcard is
+// safe here.
+const CORS_HEADER = { 'access-control-allow-origin': '*' } as const;
+
 function notFound(message: string): Response {
-  return new Response(message, { status: 404, headers: { 'content-type': 'text/plain' } });
+  return new Response(message, {
+    status: 404,
+    headers: { 'content-type': 'text/plain', ...CORS_HEADER }
+  });
 }
 
 function badRequest(message: string): Response {
-  return new Response(message, { status: 400, headers: { 'content-type': 'text/plain' } });
+  return new Response(message, {
+    status: 400,
+    headers: { 'content-type': 'text/plain', ...CORS_HEADER }
+  });
+}
+
+/** Wrap a net.fetch response with the CORS header, preserving body + status. */
+function withCors(res: Response): Response {
+  const headers = new Headers(res.headers);
+  headers.set('access-control-allow-origin', '*');
+  return new Response(res.body, { status: res.status, headers });
 }
 
 export function registerAssetProtocols(): void {
@@ -78,7 +110,7 @@ export function registerAssetProtocols(): void {
     if (!lib) return notFound(`Library ${parsed.libraryId} not open`);
     const abs = thumbAbsPath(lib.entry.mountPath, parsed.fileId);
     if (!existsSync(abs)) return notFound('Thumbnail not yet rendered');
-    return net.fetch(pathToFileURL(abs).toString());
+    return withCors(await net.fetch(pathToFileURL(abs).toString()));
   });
 
   protocol.handle(SCHEME_FILE, async (req) => {
@@ -96,7 +128,17 @@ export function registerAssetProtocols(): void {
       log.warn('file missing on disk for wh3d-file', { libraryId: parsed.libraryId, fileId: parsed.fileId, abs });
       return notFound('File missing on disk');
     }
-    return net.fetch(pathToFileURL(abs).toString());
+    try {
+      await assertExistingPathInsideLibrary(lib.entry.mountPath, abs);
+    } catch {
+      log.warn('file resolves outside library for wh3d-file', {
+        libraryId: parsed.libraryId,
+        fileId: parsed.fileId,
+        abs
+      });
+      return notFound('File missing on disk');
+    }
+    return withCors(await net.fetch(pathToFileURL(abs).toString()));
   });
 
   // Sanity: registering the protocol must happen after app is ready.

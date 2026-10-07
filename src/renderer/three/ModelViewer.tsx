@@ -103,6 +103,8 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
   },
   ref
 ) {
+  const orientationRef = useRef(file.orientation);
+  orientationRef.current = file.orientation;
   const qualityPreset: RenderQualityPreset = getRenderQualityPreset(renderQuality);
   const containerRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<ViewerCtx | null>(null);
@@ -302,7 +304,12 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
   // installs the new set. Quality is passed through so the rig keeps env-map
   // sharpness + shadow caster in sync with the active tier.
   useEffect(() => {
-    ctxRef.current?.lighting.apply(lightingStyle, qualityPreset);
+    const ctx = ctxRef.current;
+    if (!ctx) return;
+    ctx.lighting.apply(lightingStyle, qualityPreset);
+    if (ctx.currentObject) {
+      ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
+    }
   }, [lightingStyle, qualityPreset]);
 
   // Up-axis change → re-apply orientation AND reframe the camera. Changing
@@ -312,6 +319,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     const ctx = ctxRef.current;
     if (!ctx?.currentObject) return;
     applyOrientation(ctx.currentObject, file.orientation);
+    ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
     frameObject(ctx.camera, ctx.currentObject);
     ctx.controls.target.copy(objectCenter(ctx.currentObject));
     ctx.controls.update();
@@ -327,6 +335,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
     const ctx = ctxRef.current;
     if (!ctx?.currentObject) return;
     applyOrientation(ctx.currentObject, file.orientation);
+    ctx.lighting.fitToModel(new THREE.Box3().setFromObject(ctx.currentObject));
     ctx.controls.target.copy(objectCenter(ctx.currentObject));
   }, [file.orientation.yaw]);
 
@@ -361,7 +370,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
         const res = await fetch(`wh3d-file://${file.libraryId}/${file.id}`, {
           signal: abort.signal
         });
-        if (!res.ok) throw new Error(`Failed to load model (${res.status})`);
+        if (!res.ok) throw new Error(`Couldn't load this file (error ${res.status}).`);
         const buffer = await res.arrayBuffer();
         if (canceled) return;
 
@@ -370,6 +379,9 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
           disposeObject(obj);
           return;
         }
+        // Orientation may change while a large model is parsing. Apply the
+        // latest value before the object becomes visible.
+        applyOrientation(obj, orientationRef.current);
 
         ctx.scene.add(obj);
         ctx.currentObject = obj;
@@ -390,7 +402,10 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
 
         // Prefer the saved camera (captured when the user composed the
         // thumbnail) over the default frame-fit, so reopening the file
-        // restarts at the same angle.
+        // restarts at the same angle. frameObject still runs first because
+        // it sets near/far to match the model's scale — without that, a
+        // large model reopens clipped by the default far plane.
+        frameObject(ctx.camera, obj);
         if (file.camera) {
           ctx.camera.position.set(
             file.camera.position[0],
@@ -406,14 +421,13 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
           ctx.camera.updateProjectionMatrix();
           ctx.controls.update();
         } else {
-          frameObject(ctx.camera, obj);
           ctx.controls.target.copy(objectCenter(obj));
           ctx.controls.update();
         }
 
         setLoading(false);
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
+        if (canceled || (err as Error).name === 'AbortError') return;
         if (err instanceof ThreeMFEmbeddedOnlyError && err.png) {
           const blob = new Blob([err.png as BlobPart], { type: 'image/png' });
           setEmbeddedPngUrl(URL.createObjectURL(blob));
@@ -478,7 +492,7 @@ export const ModelViewer = forwardRef<ModelViewerHandle, Props>(function ModelVi
               borderRadius: 3
             }}
           >
-            Slicer preview (live 3D unavailable for this multi-part 3MF)
+            Showing the slicer's preview image. This 3MF is too big to open in 3D.
           </Text>
         </div>
       )}

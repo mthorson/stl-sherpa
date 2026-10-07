@@ -51,7 +51,7 @@ describe.runIf(canRun)('ScannerService cancellation', () => {
     expect(progress.removed).toBe(0);
     expect(scanner.getProgress('lib-cancel')?.state).toBe('cancelled');
 
-    scanner.detach('lib-cancel');
+    await scanner.detach('lib-cancel');
     db.close();
   });
 });

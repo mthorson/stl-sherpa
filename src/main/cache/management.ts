@@ -1,12 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { readdirSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { OpenLibrary } from '@main/libraries/manager';
 import { queueRunner } from '@main/thumb-pool/queue-runner';
+import { THUMB_DIR } from '@main/thumb-pool/storage';
 import type { CacheProgress } from '@shared/types';
 import { scopedLogger } from '@main/logger';
 
-const THUMBS_DIR = '.meshFlask/thumbs';
 const log = scopedLogger('cache');
 
 function idleProgress(libraryId: string): CacheProgress {
@@ -30,10 +30,18 @@ export class CacheRebuildService extends EventEmitter {
     if (this.bound) return;
     this.bound = true;
     const onDone = (libraryId: string) => this.onThumbSettled(libraryId);
+    const onFailed = (
+      libraryId: string,
+      _fileId: number,
+      _error: string,
+      terminal: boolean
+    ) => {
+      if (terminal) this.onThumbSettled(libraryId);
+    };
     queueRunner.on('thumb-rendered', onDone);
-    // A persistent failure also "settles" a file — it won't render, so it
-    // shouldn't keep the progress bar from ever completing.
-    queueRunner.on('thumb-failed', onDone);
+    // Only a terminal failure settles a file. Retryable attempts must not
+    // advance progress more than once for the same job.
+    queueRunner.on('thumb-failed', onFailed);
   }
 
   /**
@@ -128,15 +136,15 @@ export function rebuildThumbnailCache(library: OpenLibrary): void {
 }
 
 /**
- * Walk `<root>/.meshFlask/thumbs/**` and delete any sidecar PNG/WebP whose
+ * Walk `<root>/.meshFlask/thumbs/**` and delete any sidecar image whose
  * `file_id` (encoded in the filename) is no longer present in the DB.
  * Returns the number of files removed.
  *
- * Sidecar layout: `.meshFlask/thumbs/<aa>/<bb>/<file_id>.webp`
+ * Sidecar layout: `.meshFlask/thumbs/<aa>/<bb>/<file_id>.png`
  */
 export function purgeOrphanThumbs(library: OpenLibrary): { removed: number } {
   const root = library.resolver.getMountPath();
-  const base = join(root, THUMBS_DIR);
+  const base = join(root, THUMB_DIR);
   const known = new Set(library.thumbnails.listAllFileIds());
   let removed = 0;
 
@@ -177,6 +185,5 @@ export function purgeOrphanThumbs(library: OpenLibrary): { removed: number } {
       }
     }
   }
-  void statSync;
   return { removed };
 }

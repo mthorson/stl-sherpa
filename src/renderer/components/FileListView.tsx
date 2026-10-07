@@ -1,11 +1,11 @@
-import { useMemo } from 'react';
+import { memo, useMemo, useRef } from 'react';
 import { Group, Text } from '@mantine/core';
 import { IconCircleFilled, IconStarFilled } from '@tabler/icons-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useRef } from 'react';
-import type { FileRecord, ExtractedMetadata } from '@shared/types';
+import type { FileRecord } from '@shared/types';
 import { COLOR_LABEL_HEX } from '@shared/ratings';
 import { formatBytes, formatDateTime } from '../util/format';
+import { parseFileMeta } from '../util/parse-meta';
 import type { TileClickModifiers } from './ThumbGrid';
 
 interface Props {
@@ -59,7 +59,7 @@ export function FileListView({
           color: 'var(--mantine-color-dimmed)'
         }}
       >
-        <Text size="sm">This folder has no indexed 3D files.</Text>
+        <Text size="sm">No 3D files here yet.</Text>
       </div>
     );
   }
@@ -91,19 +91,9 @@ export function FileListView({
               thumbVersion={thumbVersions.get(file.id) ?? 0}
               selected={selectedIds.has(file.id)}
               isPrimary={primaryId === file.id}
-              style={{ transform: `translateY(${vRow.start}px)` }}
-              onClick={(e) =>
-                onTileClick(file.id, {
-                  shift: e.shiftKey,
-                  meta: e.metaKey,
-                  ctrl: e.ctrlKey
-                })
-              }
-              onContextMenu={(e) => {
-                if (!onTileContextMenu) return;
-                e.preventDefault();
-                onTileContextMenu(file.id, e.clientX, e.clientY);
-              }}
+              offsetY={vRow.start}
+              onTileClick={onTileClick}
+              onTileContextMenu={onTileContextMenu}
             />
           );
         })}
@@ -151,35 +141,44 @@ function Header() {
 
 const COLUMNS = '24px minmax(120px, 1fr) 36px 70px 140px 70px 70px 60px 40px';
 
-function parseMeta(json: string | null): ExtractedMetadata | null {
-  if (!json) return null;
-  try {
-    return JSON.parse(json) as ExtractedMetadata;
-  } catch {
-    return null;
-  }
-}
-
-function Row({
+// Memoized for the same reason as ThumbGrid's Tile: thumb-rendered storms
+// re-render the list constantly, and rows whose props are unchanged should
+// skip both the re-render and the metadata re-parse.
+const Row = memo(function Row({
   file,
   thumbVersion,
   selected,
   isPrimary,
-  style,
-  onClick,
-  onContextMenu
+  offsetY,
+  onTileClick,
+  onTileContextMenu
 }: {
   file: FileRecord;
   thumbVersion: number;
   selected: boolean;
   isPrimary: boolean;
-  style?: React.CSSProperties;
-  onClick: (e: React.MouseEvent) => void;
-  onContextMenu: (e: React.MouseEvent) => void;
+  offsetY: number;
+  onTileClick: (fileId: number, modifiers: TileClickModifiers) => void;
+  onTileContextMenu?: (fileId: number, x: number, y: number) => void;
 }) {
-  const meta = useMemo(() => parseMeta(file.metadataJson), [file.metadataJson]);
+  const meta = useMemo(() => parseFileMeta(file.metadataJson), [file.metadataJson]);
   const showThumb = file.hasThumb || thumbVersion > 0;
   const thumbUrl = showThumb ? `wh3d-thumb://${file.libraryId}/${file.id}?v=${thumbVersion}` : null;
+
+  const onClick = (e: React.MouseEvent) => {
+    onTileClick(file.id, { shift: e.shiftKey, meta: e.metaKey, ctrl: e.ctrlKey });
+  };
+  const onContextMenu = (e: React.MouseEvent) => {
+    if (!onTileContextMenu) return;
+    e.preventDefault();
+    // Finder-style, matching ThumbGrid: right-click outside the current
+    // selection collapses it to the clicked row so the menu never acts on
+    // files the user didn't aim at.
+    if (!selected) {
+      onTileClick(file.id, { shift: false, meta: false, ctrl: false });
+    }
+    onTileContextMenu(file.id, e.clientX, e.clientY);
+  };
 
   return (
     <button
@@ -190,7 +189,7 @@ function Row({
       style={{
         all: 'unset',
         position: 'absolute',
-        top: HEADER_HEIGHT,
+        top: 0,
         left: 0,
         width: '100%',
         height: ROW_HEIGHT,
@@ -208,7 +207,7 @@ function Row({
           ? '2px solid var(--mantine-color-indigo-4)'
           : '2px solid transparent',
         borderBottom: '1px solid var(--mantine-color-dark-7)',
-        ...style
+        transform: `translateY(${offsetY}px)`
       }}
     >
       <Thumb url={thumbUrl} ext={file.ext} />
@@ -252,7 +251,7 @@ function Row({
       </div>
     </button>
   );
-}
+});
 
 function Thumb({ url, ext }: { url: string | null; ext: string }) {
   if (url) {

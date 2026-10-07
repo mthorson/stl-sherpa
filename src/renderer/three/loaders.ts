@@ -57,9 +57,23 @@ export async function loadModel(
       obj = loadThreeMF(buffer);
       break;
     default:
-      throw new Error(`Unsupported extension: ${ext}`);
+      throw new Error(`Can't preview .${ext} files.`);
   }
   applyOrientation(obj, orientation ?? getDefaultOrientation(ext));
+  // A mesh with NaN/Infinity vertices (corrupt or truncated file) loads
+  // without throwing but poisons everything downstream: the camera frames
+  // to NaN and the thumb worker caches a black render as a success. Fail
+  // loudly instead so the failure is recorded and retried like any other.
+  const box = new THREE.Box3().setFromObject(obj);
+  if (!box.isEmpty()) {
+    const finite =
+      Number.isFinite(box.min.x + box.min.y + box.min.z) &&
+      Number.isFinite(box.max.x + box.max.y + box.max.z);
+    if (!finite) {
+      disposeObject(obj);
+      throw new Error('This file contains invalid geometry and appears to be corrupt.');
+    }
+  }
   return obj;
 }
 
@@ -84,10 +98,28 @@ function loadOBJ(buffer: ArrayBuffer): THREE.Object3D {
 }
 
 function loadSTL(buffer: ArrayBuffer): THREE.Mesh {
+  // Binary STL declares its face count in the header, and STLLoader allocates
+  // arrays for that count before reading any data. Validate the declared
+  // count against the actual byte length first, or a truncated/crafted file
+  // can trigger a multi-GB allocation before it fails.
+  if (isBinarySTL(buffer)) {
+    const faces = new DataView(buffer).getUint32(80, true);
+    if (84 + faces * 50 > buffer.byteLength) {
+      throw new Error('This STL is truncated or corrupt.');
+    }
+  }
   const loader = new STLLoader();
   const geom = loader.parse(buffer);
   if (!geom.hasAttribute('normal')) geom.computeVertexNormals();
   return new THREE.Mesh(geom, neutralMaterial());
+}
+
+/** Mirrors STLLoader's own binary detection: an ASCII STL starts with "solid". */
+function isBinarySTL(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 84) return false;
+  const head = new Uint8Array(buffer, 0, 5);
+  const solid = [0x73, 0x6f, 0x6c, 0x69, 0x64]; // "solid"
+  return !solid.every((c, i) => head[i] === c);
 }
 
 function loadPLY(buffer: ArrayBuffer): THREE.Mesh {
@@ -109,7 +141,7 @@ function loadThreeMF(buffer: ArrayBuffer): THREE.Object3D {
   const inspection = inspectThreeMF(buffer);
   if (inspection.kind === 'too-large') {
     throw new ThreeMFEmbeddedOnlyError(
-      'Mesh data exceeds in-memory preview budget; showing embedded slicer thumbnail.',
+      'This 3MF is too big to preview in 3D.',
       inspection.embeddedPng
     );
   }
@@ -123,7 +155,7 @@ function loadThreeMF(buffer: ArrayBuffer): THREE.Object3D {
     // multi-part 3MF) → fall back to the embedded PNG rather than showing
     // the cryptic loader error.
     throw new ThreeMFEmbeddedOnlyError(
-      (err as Error).message || 'Failed to parse 3MF.',
+      (err as Error).message || "Couldn't read this 3MF. The file may be corrupt.",
       // Re-extract from the original buffer; the rewritten one drops nothing
       // but it's cheaper to scan the original we already have in hand.
       extract3MFEmbeddedThumbnail(buffer)
@@ -164,17 +196,38 @@ function applyDefaultMaterial(obj: THREE.Object3D): void {
 
 /** Free all GPU resources owned by an object subtree. Idempotent. */
 export function disposeObject(obj: THREE.Object3D): void {
+  const disposedGeometries = new Set<THREE.BufferGeometry>();
+  const disposedMaterials = new Set<THREE.Material>();
+  const disposedTextures = new Set<THREE.Texture>();
+  const closedBitmaps = new Set<ImageBitmap>();
   obj.traverse((node) => {
     const mesh = node as THREE.Mesh;
-    if (mesh.geometry) mesh.geometry.dispose();
+    if (mesh.geometry && !disposedGeometries.has(mesh.geometry)) {
+      disposedGeometries.add(mesh.geometry);
+      mesh.geometry.dispose();
+    }
     const mats: THREE.Material[] = Array.isArray(mesh.material)
       ? mesh.material
       : mesh.material
         ? [mesh.material]
         : [];
     for (const m of mats) {
+      if (disposedMaterials.has(m)) continue;
+      disposedMaterials.add(m);
       for (const v of Object.values(m)) {
-        if (v && (v as THREE.Texture).isTexture) (v as THREE.Texture).dispose();
+        const texture = v as THREE.Texture;
+        if (!v || !texture.isTexture || disposedTextures.has(texture)) continue;
+        disposedTextures.add(texture);
+        const image = texture.image;
+        if (
+          typeof ImageBitmap !== 'undefined' &&
+          image instanceof ImageBitmap &&
+          !closedBitmaps.has(image)
+        ) {
+          closedBitmaps.add(image);
+          image.close();
+        }
+        texture.dispose();
       }
       m.dispose();
     }

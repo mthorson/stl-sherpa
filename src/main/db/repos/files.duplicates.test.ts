@@ -54,6 +54,15 @@ function seed(db: ReturnType<typeof freshDb>) {
   return files;
 }
 
+function hashEntry(
+  files: ReturnType<typeof createFilesRepo>,
+  relPath: string,
+  sha256: string
+) {
+  const file = files.getByRelPath(relPath)!;
+  return { id: file.id, sha256, sizeBytes: file.sizeBytes, mtimeMs: file.mtimeMs };
+}
+
 describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
   it('new files start with content_sha256 = null and are not flagged as dups', () => {
     const db = freshDb();
@@ -69,7 +78,7 @@ describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
     const missing = files.listMissingContentHash();
     expect(missing).toHaveLength(4);
     const first = missing[0];
-    files.setContentSha256Many([{ id: first.id, sha256: 'deadbeef' }]);
+    files.setContentSha256Many([{ ...first, sha256: 'deadbeef' }]);
     expect(files.listMissingContentHash()).toHaveLength(3);
     expect(files.getById(first.id)!.contentSha256).toBe('deadbeef');
     db.close();
@@ -78,12 +87,11 @@ describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
   it('duplicatesOnly returns only files whose hash is shared by another file', () => {
     const db = freshDb();
     const files = seed(db);
-    const byPath = new Map(files.query({}).map((f) => [f.relPath, f.id] as const));
     // a + sub/b share a hash (an exact dup across folders); c is unique; d unhashed.
     files.setContentSha256Many([
-      { id: byPath.get('a.stl')!, sha256: 'AAAA' },
-      { id: byPath.get('sub/b.stl')!, sha256: 'AAAA' },
-      { id: byPath.get('c.stl')!, sha256: 'CCCC' }
+      hashEntry(files, 'a.stl', 'AAAA'),
+      hashEntry(files, 'sub/b.stl', 'AAAA'),
+      hashEntry(files, 'c.stl', 'CCCC')
     ]);
 
     const dups = files.query({ duplicatesOnly: true });
@@ -97,12 +105,11 @@ describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
   it('duplicate results are ordered so same-hash files are adjacent', () => {
     const db = freshDb();
     const files = seed(db);
-    const byPath = new Map(files.query({}).map((f) => [f.relPath, f.id] as const));
     files.setContentSha256Many([
-      { id: byPath.get('a.stl')!, sha256: 'ZZZZ' },
-      { id: byPath.get('c.stl')!, sha256: 'AAAA' },
-      { id: byPath.get('sub/b.stl')!, sha256: 'ZZZZ' },
-      { id: byPath.get('d.glb')!, sha256: 'AAAA' }
+      hashEntry(files, 'a.stl', 'ZZZZ'),
+      hashEntry(files, 'c.stl', 'AAAA'),
+      hashEntry(files, 'sub/b.stl', 'ZZZZ'),
+      hashEntry(files, 'd.glb', 'AAAA')
     ]);
     const dups = files.query({ duplicatesOnly: true });
     const hashes = dups.map((f) => f.contentSha256);
@@ -122,7 +129,7 @@ describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
     const db = freshDb();
     const files = seed(db);
     const id = files.getByRelPath('a.stl')!.id;
-    files.setContentSha256Many([{ id, sha256: 'OLD' }]);
+    files.setContentSha256Many([hashEntry(files, 'a.stl', 'OLD')]);
     expect(files.getById(id)!.contentSha256).toBe('OLD');
     // Re-upsert with a changed mtime → upsert clears the stale hash.
     files.upsert({
@@ -134,6 +141,24 @@ describe.runIf(canRun)('files content_sha256 + duplicate grouping', () => {
       mtimeMs: 999
     });
     expect(files.getById(id)!.contentSha256).toBeNull();
+    db.close();
+  });
+
+  it('does not persist a digest computed for an older file version', () => {
+    const db = freshDb();
+    const files = seed(db);
+    const stale = hashEntry(files, 'a.stl', 'STALE');
+    files.upsert({
+      relPath: 'a.stl',
+      parentDir: '',
+      filename: 'a.stl',
+      ext: 'stl',
+      sizeBytes: stale.sizeBytes + 1,
+      mtimeMs: stale.mtimeMs + 1
+    });
+
+    expect(files.setContentSha256Many([stale])).toBe(0);
+    expect(files.getById(stale.id)!.contentSha256).toBeNull();
     db.close();
   });
 });

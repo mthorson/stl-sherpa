@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { forwardRef, useEffect, useRef } from 'react';
 import { Group, Modal, Stack, Text } from '@mantine/core';
 import type { FileRecord } from '@shared/types';
 import type { LightingStyle } from '@shared/lighting-types';
@@ -74,25 +74,19 @@ export function CompareModal({ opened, onClose, libraryId, left, right, lighting
   );
 }
 
-const ComparePane = (function ComparePaneRender() {
-  // Use a tiny inline forwarded component to keep the JSX above readable.
-  // The ref points at the inner ModelViewer.
-  return function ComparePane({
-    label,
-    libraryId,
-    file,
-    ref,
-    lightingStyle,
-    renderQuality
-  }: {
+// forwardRef is required here: React strips a plain `ref` prop from function
+// components, so without it the camera-sync handles never attach.
+const ComparePane = forwardRef<
+  ModelViewerHandle,
+  {
     label: string;
     libraryId: string;
     file: FileRecord;
-    ref: React.Ref<ModelViewerHandle>;
     lightingStyle: LightingStyle;
     renderQuality: RenderQuality;
-  }) {
-    return (
+  }
+>(function ComparePane({ label, libraryId, file, lightingStyle, renderQuality }, ref) {
+  return (
       <div
         style={{
           flex: 1,
@@ -131,6 +125,5 @@ const ComparePane = (function ComparePaneRender() {
           {label}
         </div>
       </div>
-    );
-  };
-})();
+  );
+});

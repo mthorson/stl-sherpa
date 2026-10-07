@@ -3,6 +3,7 @@ import { Autocomplete, Group, Pill, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import type { TagRecord, TagWithCount } from '@shared/types';
 import { ipc } from '../ipc-client';
+import { hasActiveComboboxOption } from '../util/combobox';
 
 interface Props {
   libraryId: string;
@@ -81,7 +82,10 @@ export function TagEditor({ libraryId, fileId, allTags, refreshKey }: Props) {
         data={suggestions}
         onOptionSubmit={(value) => void submit(value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          // With a dropdown option highlighted, Enter belongs to Mantine's
+          // onOptionSubmit; submitting the typed prefix too would create
+          // two tags.
+          if (e.key === 'Enter' && !hasActiveComboboxOption(e)) {
             e.preventDefault();
             void submit(draft);
           }

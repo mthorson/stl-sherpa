@@ -5,7 +5,7 @@
 ![meshFlask screenshot](docs/screenshot.png)
 
 A desktop browser and organizer for 3D model files.
-The current build is specifically aimed at the 3D printing community.
+Right now it's aimed squarely at 3D printing.
 
 Supported file formats common to 3D printing:
 **glb, gltf, obj, stl, ply, 3mf**.
@@ -18,13 +18,13 @@ Well then, this app is for you!
 Open one or more folders as "libraries". Each library gets its own SQLite
 database (`.meshFlask.db` at the library root) tagged with a UUID; the
 per-machine mount path lives in your user app data. Move the library
-between machines and the app reconnects by UUID — you just edit one line
+between machines and the app reconnects by UUID: you just edit one line
 in `libraries.json`.
 
 Once a library is attached you get:
 
-- A virtualized thumbnail grid (scales gracefully to libraries with
-  thousands of files) plus a dense list view
+- A virtualized thumbnail grid (stays fast even with thousands of
+  files) plus a dense list view
 - Hierarchical tags. Tag something `characters/heroes/Aragorn` and it
   shows up under all three.
 - 1–5 star ratings and 5 color labels. Keyboard shortcuts: `1`–`5` for
@@ -53,6 +53,10 @@ Built with Electron, runs on macOS, Windows, and Linux. See
 [Packaging a release](#packaging-a-release) for the installer scripts.
 
 ## Running it locally
+
+Use Node 22 (there's a `.nvmrc`), the same version CI runs. Newer system
+Node versions may not have prebuilt `better-sqlite3` binaries and will try
+to compile it during install.
 
 ```sh
 npm install
@@ -84,10 +88,11 @@ npm run dist:win        # Windows NSIS installer, x64 (cross-builds from Mac)
 npm run dist:linux      # Linux AppImage, x64
 ```
 
-Output lands in `release/`. Binaries are **unsigned** — macOS Gatekeeper
-will block the DMG on first open until you right-click → Open, and Windows
-SmartScreen will warn users. Code signing requires Apple Developer + an
-Authenticode cert respectively; both are outside what this repo sets up.
+Output lands in `release/`. macOS builds are signed and notarized when the
+Apple Developer credentials are available (the release workflow reads them
+from repo secrets; local builds need the identity in your keychain).
+Windows builds are unsigned, so SmartScreen will warn users on first
+launch; signing those needs an Authenticode cert this repo doesn't set up.
 
 The app icon is generated from `build/icon.svg` (matches the in-app logo).
 `npm run build:icon` re-renders the PNG at 1024×1024 via `sharp`;
@@ -117,10 +122,12 @@ user app data:
 
 Two files live there:
 
-- `libraries.json` is a UUID → mount-path map. If you move a library
-  to a different machine, edit this file. The app matches by UUID
-  and reconnects.
-- `preferences.json` holds your global settings — units, registered
+- `libraries.json` is a UUID → mount-path map. If a library's folder
+  moves or gets renamed, right-click the library in the sidebar and
+  pick "Locate moved folder…" (or hit the Locate button on the offline
+  screen). The app verifies the folder holds the same library by UUID
+  before reconnecting. Editing this file by hand still works too.
+- `preferences.json` holds your global settings: units, registered
   print beds, external apps, NAS poll interval, render quality, slicer
   profiles. Managed through the gear-icon preferences modal in the
   header.
@@ -133,17 +140,17 @@ preferences) via `localStorage` keyed on the library UUID.
 
 Three Electron processes:
 
-1. **Main** — owns the SQLite connection (`better-sqlite3`), the
+1. **Main** owns the SQLite connection (`better-sqlite3`), the
    filesystem watcher (`chokidar` plus an initial walker), the
    thumbnail worker pool, and external-app launching. All IPC handlers
    register here.
-2. **Renderer** — the visible UI. React + Mantine, with a Three.js
+2. **Renderer** is the visible UI. React + Mantine, with a Three.js
    viewer for the live preview. Talks to main via a typed contextBridge
    defined in `src/preload/preload.ts`.
-3. **Thumbnail workers** — a small pool of hidden off-screen
-   `BrowserWindow`s, each rendering one model at a time to a PNG. Pool
-   recycles workers after a fixed job count to bound GPU/VRAM leaks.
-   These have `nodeIntegration: true` so they can read files directly.
+3. **Thumbnail workers** are a small pool of hidden `BrowserWindow`s,
+   each rendering one model at a time to a PNG. The pool recycles
+   workers after a fixed job count to bound GPU/VRAM leaks. These have
+   `nodeIntegration: true` so they can read files directly.
 
 The renderer uses two custom Electron protocols: `wh3d-thumb://` for
 tile images and `wh3d-file://` for raw model bytes. Both URL shapes are
@@ -170,13 +177,13 @@ Two non-default quirks:
   the journal mode at attach time.
 - Schema versioning via SQLite's `user_version` pragma. Migrations are
   numbered `.sql` files under `src/main/db/migrations/` and applied on
-  first open. Current schema: v10.
+  first open. Current schema: v11.
 
 ### Thumbnail storage
 
-WebP sidecars at
-`<library_root>/.meshFlask/thumbs/<aa>/<bb>/<file_id>.webp` (two-level
-hash fanout — a million-file library doesn't end up with a million
+PNG sidecars at
+`<library_root>/.meshFlask/thumbs/<aa>/<bb>/<file_id>.png` (two-level
+hash fanout, so a million-file library doesn't end up with a million
 files in one directory). They're not stored as SQLite BLOBs because
 that balloons the DB file and makes backups annoying.
 
@@ -196,10 +203,10 @@ that balloons the DB file and makes backups annoying.
   batch rendering does not. If you bump quality from Low → High and
   want the existing thumb cache to match, you'd have to manually
   rebuild it from preferences → cache.
-- **Packaged builds are unsigned.** `npm run dist` produces working
-  installers, but macOS Gatekeeper and Windows SmartScreen will warn
-  users on first launch. Adding code-signing certs is left as an
-  exercise for whoever wants to ship this publicly.
+- **Windows builds are unsigned.** SmartScreen will warn users on first
+  launch. macOS signing and notarization are wired up through the
+  release workflow's secrets; an Authenticode cert for Windows is left
+  as an exercise for whoever wants to ship this publicly.
 - **No cross-library view.** Each query is scoped to one library at a
   time. (There was a brief experiment with an "All Libraries" mode; it
   turned out to be a tangle of edge cases per-library tags and

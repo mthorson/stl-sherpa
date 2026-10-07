@@ -24,6 +24,15 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
+      # Don't ship a tag that doesn't typecheck or pass tests. (test:full's
+      # shell-group syntax needs a POSIX shell, so skip it on Windows — the
+      # Ubuntu leg covers the suite.)
+      - run: npm run typecheck
+      - run: npm run test:full
+        if: runner.os != 'Windows'
+      # build/icon.png is gitignored; without this step electron-builder
+      # falls back to the stock Electron icon.
+      - run: npm run build:icon
       - run: npm run ${{ matrix.dist }}
         env:
           # Read by electron-builder on macOS for signing + notarization.

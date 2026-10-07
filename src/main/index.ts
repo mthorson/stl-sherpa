@@ -16,7 +16,6 @@ import { queueRunner } from '@main/thumb-pool/queue-runner';
 import { DEFAULT_LOG_LEVEL, initLogger, scopedLogger, setLogLevel } from '@main/logger';
 import { buildMenu, subscribeMenuToUndoQueue } from '@main/menu';
 import * as prefsStore from '@main/preferences/store';
-import { deliverPendingOnReady } from '@main/events';
 
 const isDev = !app.isPackaged;
 const log = scopedLogger('app');
@@ -39,17 +38,27 @@ function createMainWindow(): BrowserWindow {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   });
 
   win.once('ready-to-show', () => win.show());
-  // Flush any library events that fired before the first window existed
-  // (e.g. integrity-check failures during openAllFromRegistry).
-  deliverPendingOnReady(win);
+  // Library events that fired before the first window existed (e.g.
+  // integrity-check failures during openAllFromRegistry) stay queued in
+  // @main/events until the renderer pulls them via drainPendingEvents.
+
+  win.webContents.on('will-navigate', (event) => {
+    event.preventDefault();
+  });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    // Only hand valid, encrypted web URLs to the OS. Anything else (file:,
+    // custom schemes, malformed URLs) stays inside the app.
+    try {
+      if (new URL(url).protocol === 'https:') void shell.openExternal(url);
+    } catch {
+      // Ignore malformed URLs.
+    }
     return { action: 'deny' };
   });
 
@@ -113,9 +122,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', async () => {
+let shutdownStarted = false;
+
+app.on('before-quit', (event) => {
+  if (shutdownStarted) return;
+  event.preventDefault();
+  shutdownStarted = true;
   log.info('app shutting down');
-  await queueRunner.shutdown();
-  await thumbPool.shutdown();
-  manager.shutdown();
+  void (async () => {
+    try {
+      await queueRunner.shutdown();
+    } catch (err) {
+      log.error('queue runner shutdown failed', { err: (err as Error).message });
+    }
+    try {
+      await thumbPool.shutdown();
+    } catch (err) {
+      log.error('thumbnail pool shutdown failed', { err: (err as Error).message });
+    }
+    await manager.shutdown();
+    app.quit();
+  })();
 });

@@ -19,6 +19,26 @@ a settled question.
 
 ---
 
+## 2026-07-31: Collection membership belongs in main
+
+**Context.** The renderer expanded smart collection rules into file query
+filters. ZIP export used a separate manual-membership path, so smart
+collections appeared empty there. Each new collection consumer would have
+needed to duplicate the same rules.
+
+**Decision.** Resolve manual and smart collection membership through one
+main-process Collection Query module. The renderer and export handlers send a
+collection id plus any runtime filters. The module owns saved-rule merging,
+whole-library smart scope, manual position ordering, and missing-collection
+handling.
+
+**Consequences.** Browsing and exports now share collection semantics. The
+renderer no longer needs database-domain rules. New collection consumers
+should call the Collection Query interface instead of reading membership rows
+or expanding smart rules themselves.
+
+---
+
 ## 2026-05-22 — Print-cost estimate is deliberately rough
 
 **Context.** Added a per-model material-cost estimate (filament + resin)

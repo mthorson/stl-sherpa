@@ -14,21 +14,15 @@ export function broadcastLibraryEvent(event: LibraryFilesEvent): void {
 }
 
 /**
- * Queue an event for the next BrowserWindow to become ready. Use when an
- * event fires before any window exists (e.g. integrity check during startup)
- * — direct broadcast would be lost. Delivered exactly once per (event)
- * registration, on the first window that finishes loading.
+ * Queue an event that fired before any renderer could hear it (e.g. an
+ * integrity check during startup). The renderer PULLS these via the
+ * drainPendingEvents IPC right after it subscribes — pushing them on
+ * did-finish-load raced React's subscription and could lose them.
  */
 const pending: LibraryFilesEvent[] = [];
 
-export function deliverPendingOnReady(win: BrowserWindow): void {
-  if (pending.length === 0) return;
-  const drained = pending.splice(0, pending.length);
-  win.webContents.once('did-finish-load', () => {
-    for (const ev of drained) {
-      if (!win.isDestroyed()) win.webContents.send(IPC_EVENT.libraryEvent, ev);
-    }
-  });
+export function drainPendingEvents(): LibraryFilesEvent[] {
+  return pending.splice(0, pending.length);
 }
 
 export function broadcastOrQueue(event: LibraryFilesEvent): void {

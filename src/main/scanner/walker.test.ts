@@ -8,8 +8,10 @@ import type { UpsertInput } from '../db/repos/files';
 
 const TESTFILES = resolve(__dirname, '../../../testfiles');
 
-// Skip the suite if the user hasn't placed sample files there.
-const hasFixtures = existsSync(TESTFILES);
+// Skip the suite unless the SPECIFIC fixture set these assertions hard-code
+// is present — testfiles/ is a gitignored scratch area, so gating on the
+// directory alone breaks the suite as soon as anything else lives there.
+const hasFixtures = existsSync(join(TESTFILES, 'manticore.3mf'));
 
 describe.runIf(hasFixtures)('walkLibrary against testfiles/', () => {
   it('finds the Manticore 3mf at the root and all 5 stl parts in the subfolder', async () => {
@@ -93,6 +95,13 @@ describe('walkLibrary cancellation', () => {
     ).rejects.toBeInstanceOf(WalkAbortedError);
     // Aborted before descending into the root → no batches were delivered.
     expect(batches).toHaveLength(0);
+  });
+
+  it('fails instead of treating an unreadable root as an empty library', async () => {
+    const missing = join(root, 'missing');
+    await expect(walkLibrary(new PathResolver(missing))).rejects.toThrow(
+      `Failed to read directory ${missing}`
+    );
   });
 
   it('stops early when aborted from inside onBatch', async () => {

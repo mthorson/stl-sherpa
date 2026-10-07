@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { looksLikeNetworkMount } from '@shared/paths';
+import { isNetworkMount } from '@main/files/network-mount';
 import { scopedLogger } from '@main/logger';
 import migration001 from './migrations/001_init.sql?raw';
 import migration002 from './migrations/002_fts_triggers.sql?raw';
@@ -108,7 +108,7 @@ export function openLibraryDatabase(libraryRoot: string): Database.Database {
 
   // SQLite WAL is unsafe over network mounts; fall back to TRUNCATE there.
   // foreign_keys is per-connection and must be re-enabled every open.
-  const journalMode = looksLikeNetworkMount(libraryRoot) ? 'TRUNCATE' : 'WAL';
+  const journalMode = isNetworkMount(libraryRoot) ? 'TRUNCATE' : 'WAL';
   db.pragma(`journal_mode = ${journalMode}`);
   db.pragma('foreign_keys = ON');
   db.pragma('synchronous = NORMAL');

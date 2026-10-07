@@ -43,6 +43,16 @@ export type RevealLibraryResult =
   | { ok: true }
   | { ok: false; error: string };
 
+/**
+ * Re-point a library whose folder moved or was renamed. Main shows the
+ * folder picker itself and validates that the chosen folder contains this
+ * library's DB (matched by UUID) before updating the registry.
+ */
+export type RelocateLibraryResult =
+  | { ok: true; canceled?: false; library: LibrarySummary }
+  | { ok: false; canceled: true }
+  | { ok: false; canceled?: false; error: string };
+
 export interface PickFolderResult {
   canceled: boolean;
   path?: string;
@@ -59,10 +69,9 @@ export interface FileRecord {
   id: number;
   /** Library that owns this file. Stamped at the IPC boundary; the per-library
    *  SQLite DB doesn't store it because each DB is already scoped to one
-   *  library. Knowing this per-file is what makes "All Libraries" mode possible
-   *  — every renderer code path that builds a wh3d-thumb:// / wh3d-file:// URL
-   *  or invokes a per-file IPC dispatches by `file.libraryId` rather than a
-   *  global "active library" id. */
+   *  library. Renderer code paths that build wh3d-thumb:// / wh3d-file:// URLs
+   *  or invoke per-file IPC dispatch by `file.libraryId` rather than a global
+   *  "active library" id. */
   libraryId: string;
   relPath: string;
   parentDir: string;
@@ -70,7 +79,6 @@ export interface FileRecord {
   ext: string;
   sizeBytes: number;
   mtimeMs: number;
-  sha256: string | null;
   /**
    * SHA-256 over the file's raw bytes, computed during scan for new/changed
    * files. Drives exact-duplicate detection. Null until the file has been
@@ -200,7 +208,13 @@ export type LibraryFilesEvent =
   | { kind: 'cache-rebuild-complete'; libraryId: string; progress: CacheProgress }
   | { kind: 'files-changed'; libraryId: string }
   | { kind: 'thumb-rendered'; libraryId: string; fileId: number }
-  | { kind: 'thumb-failed'; libraryId: string; fileId: number; error: string }
+  | {
+      kind: 'thumb-failed';
+      libraryId: string;
+      fileId: number;
+      error: string;
+      terminal: boolean;
+    }
   | { kind: 'tags-changed'; libraryId: string; fileId?: number }
   | { kind: 'collections-changed'; libraryId: string; collectionId?: number }
   | { kind: 'integrity-failed'; libraryId: string; libraryName: string; error: string }
@@ -235,8 +249,9 @@ export interface FileQueryRequest {
   /** Files must have ALL of these tag ids. Empty/undefined = no tag filter. */
   tagIds?: number[];
   /**
-   * Restrict to files in this collection. Mutually exclusive with parentDir
-   * in the UI; if both are supplied the collection wins.
+   * Resolve this collection's membership. Manual collections use stored file
+   * membership; smart collections merge saved rules with runtime filters.
+   * Collection scope wins when parentDir is also supplied.
    */
   collectionId?: number;
   /** Restrict to files with at least this rating. 0 = no rating filter. */
@@ -421,6 +436,18 @@ export interface IpcApi {
   removeLibrary(req: RemoveLibraryRequest): Promise<RemoveLibraryResult>;
   renameLibrary(req: RenameLibraryRequest): Promise<RenameLibraryResult>;
   revealLibrary(id: string): Promise<RevealLibraryResult>;
+  /**
+   * Re-point a moved/renamed library. Main shows the folder picker and
+   * validates the chosen folder holds this library's DB before updating
+   * the registry and re-attaching.
+   */
+  relocateLibrary(id: string): Promise<RelocateLibraryResult>;
+  /**
+   * Pull events that fired in main before this renderer subscribed (startup
+   * integrity warnings). Call once, right after onLibraryEvent. Draining
+   * empties the queue, so events are delivered exactly once.
+   */
+  drainPendingEvents(): Promise<LibraryFilesEvent[]>;
 
   listFolders(req: ListFoldersRequest): Promise<FolderTreeNode | null>;
   listFiles(req: ListFilesRequest): Promise<FileRecord[]>;
@@ -464,6 +491,12 @@ export interface IpcApi {
 
   listTags(libraryId: string): Promise<TagWithCount[]>;
   listTagsForFile(libraryId: string, fileId: number): Promise<TagRecord[]>;
+  /**
+   * Tags carried by ANY of the given files, with `fileCount` = how many of
+   * those files carry each tag. One round trip for bulk-selection UIs
+   * instead of one listTagsForFile per file.
+   */
+  listTagsForFiles(libraryId: string, fileIds: number[]): Promise<TagWithCount[]>;
   addTagToFile(libraryId: string, fileId: number, tagName: string): Promise<TagRecord>;
   removeTagFromFile(libraryId: string, fileId: number, tagId: number): Promise<void>;
   deleteTag(libraryId: string, tagId: number): Promise<void>;
@@ -522,7 +555,7 @@ export interface IpcApi {
   cancelCacheRebuild(libraryId: string): Promise<void>;
   purgeOrphanThumbs(libraryId: string): Promise<{ removed: number }>;
   getPreferences(): Promise<import('./preferences').PreferencesFile>;
-  setPreferences(prefs: import('./preferences').PreferencesFile): Promise<void>;
+  patchPreferences(patch: import('./preferences').PreferencesPatch): Promise<void>;
 
   listTagTree(libraryId: string): Promise<TagTreeNode[]>;
   setTagParent(libraryId: string, tagId: number, parentId: number | null): Promise<void>;
@@ -556,6 +589,10 @@ export interface IpcApi {
   >;
 
   listExternalApps(): Promise<import('./preferences').ExternalAppRegistration[]>;
+  updateExternalApp(
+    id: string,
+    patch: import('./preferences').ExternalAppSettingsPatch
+  ): Promise<boolean>;
   /**
    * Pop the OS file-picker so the user chooses an app bundle/executable;
    * returns the registration (or null if canceled). `extensions` is the

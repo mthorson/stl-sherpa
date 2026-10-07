@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Divider, Group, Stack, Text, Textarea } from '@mantine/core';
 import type {
   CollectionRecord,
@@ -18,6 +18,7 @@ import {
   estimateResinCost
 } from '@shared/print-cost';
 import { TagEditor } from './TagEditor';
+import { parseFileMeta } from '../util/parse-meta';
 import { BulkMetadataPanel } from './BulkMetadataPanel';
 import { AddToCollectionMenu } from './AddToCollectionMenu';
 import { RatingWidget } from './RatingWidget';
@@ -148,14 +149,7 @@ function SingleFilePanel({
   onSetRating: (rating: number) => Promise<void>;
   onSetColorLabel: (label: ColorLabel | null) => Promise<void>;
 }) {
-  const metadata = useMemo<ExtractedMetadata | null>(() => {
-    if (!file.metadataJson) return null;
-    try {
-      return JSON.parse(file.metadataJson) as ExtractedMetadata;
-    } catch {
-      return null;
-    }
-  }, [file.metadataJson]);
+  const metadata = useMemo(() => parseFileMeta(file.metadataJson), [file.metadataJson]);
 
   return (
     <Stack gap="sm" p="md" style={{ height: '100%', overflow: 'auto' }}>
@@ -257,20 +251,45 @@ function SingleFilePanel({
  */
 function NotesEditor({ libraryId, file }: { libraryId: string; file: FileRecord }) {
   const [draft, setDraft] = useState(file.notes);
+  // What we last saved (or received). Comparing against this rather than
+  // `file.notes` keeps unrelated files-changed reloads from clobbering typing.
+  const savedRef = useRef(file.notes);
+  const pendingRef = useRef<{ fileId: number; value: string } | null>(null);
 
-  // Re-seed when the user picks a different file.
+  // Re-seed only when the user picks a different file — never on reloads of
+  // the same file, which arrive constantly (watcher events, rating changes).
   useEffect(() => {
     setDraft(file.notes);
-  }, [file.id, file.notes]);
+    savedRef.current = file.notes;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.id]);
 
   // Debounced save on edits.
   useEffect(() => {
-    if (draft === file.notes) return;
+    if (draft === savedRef.current) {
+      pendingRef.current = null;
+      return;
+    }
+    pendingRef.current = { fileId: file.id, value: draft };
     const t = setTimeout(() => {
+      pendingRef.current = null;
+      savedRef.current = draft;
       void ipc.setFileNotes(libraryId, file.id, draft);
     }, 400);
     return () => clearTimeout(t);
-  }, [draft, file.id, file.notes, libraryId]);
+  }, [draft, file.id, libraryId]);
+
+  // Flush (not discard) a pending save when switching files or unmounting, so
+  // typing a note and immediately clicking another file doesn't lose it.
+  useEffect(() => {
+    return () => {
+      const p = pendingRef.current;
+      if (p) {
+        pendingRef.current = null;
+        void ipc.setFileNotes(libraryId, p.fileId, p.value);
+      }
+    };
+  }, [file.id, libraryId]);
 
   return (
     <Stack gap={4}>
@@ -328,14 +347,14 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
         </Text>
         {isEmbedded && (
           <Badge size="xs" variant="light" color="orange">
-            slicer thumb
+            slicer preview
           </Badge>
         )}
       </Group>
       {isEmbedded ? (
         <Text size="xs" c="dimmed">
-          Mesh metadata is skipped when a slicer-embedded thumbnail is used. Capture the in-UI view
-          to populate.
+          This preview came embedded in the file, so mesh stats weren't calculated. Capture a view
+          from the 3D preview to get them.
         </Text>
       ) : (
         <>
@@ -358,7 +377,7 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
                   ? 'yes'
                   : metadata.validation.isWatertight === false
                     ? `no${metadata.validation.degenerateTriangles > 0 ? ` (${metadata.validation.degenerateTriangles} degenerate)` : ''}`
-                    : `n/a (${metadata.validation.skipped})`
+                    : `not checked (${metadata.validation.skipped})`
               }
             />
           )}
@@ -429,8 +448,7 @@ function ModelStats({ metadata }: { metadata: ExtractedMetadata }) {
             </div>
           ) : (
             <Text size="xs" c="dimmed">
-              Re-render this thumbnail to compute mesh volume and a print-cost
-              estimate.
+              Re-render the thumbnail to calculate mesh volume and estimate print cost.
             </Text>
           )}
         </>

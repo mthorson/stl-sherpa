@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { PreferencesFile } from '@shared/preferences';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { PreferencesFile, PreferencesPatch } from '@shared/preferences';
 import { ipc } from '../ipc-client';
 
 /**
@@ -19,10 +19,12 @@ export function usePreferences(): {
   reload: () => Promise<void>;
 } {
   const [prefs, setPrefs] = useState<PreferencesFile | null>(null);
+  const reloadSequence = useRef(0);
 
   const reload = useCallback(async () => {
+    const sequence = ++reloadSequence.current;
     const next = await ipc.getPreferences();
-    setPrefs(next);
+    if (sequence === reloadSequence.current) setPrefs(next);
   }, []);
 
   useEffect(() => {
@@ -37,11 +39,7 @@ export function usePreferences(): {
   return { prefs, reload };
 }
 
-/**
- * Persist the preferences file and trigger every `usePreferences` to refetch.
- * Call this from the PreferencesModal after a successful save.
- */
-export async function savePreferences(next: PreferencesFile): Promise<void> {
-  await ipc.setPreferences(next);
+export async function savePreferencePatch(patch: PreferencesPatch): Promise<void> {
+  await ipc.patchPreferences(patch);
   notifyAll();
 }
